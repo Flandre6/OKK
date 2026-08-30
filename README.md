@@ -141,14 +141,16 @@ OKK/
 
 ## 🤝 致谢
 
-感谢以下开源项目与作者提供的思路与启发：
+感谢以下开源项目与作者提供的设计思路与技术启发：
 
-- [WAuxiliary](https://github.com/HdShare/WAuxiliary_Public)
-- [WeKit](https://github.com/Ujhhgtg/WeKit)
-- [HChat](https://t.me/Hchat_ci)
-- [NewMiko](https://github.com/dartcv/NewMiko)
-- [DexKit](https://github.com/LuckyPray/DexKit)
-- [MIUIX-KMP](https://github.com/matsushita-takeo/MIUIX-KMP)
+<p>
+  <a href="https://github.com/HdShare/WAuxiliary_Public">WAuxiliary</a> &nbsp;•&nbsp;
+  <a href="https://github.com/Ujhhgtg/WeKit">WeKit</a> &nbsp;•&nbsp;
+  <a href="https://t.me/Hchat_ci">HChat</a> &nbsp;•&nbsp;
+  <a href="https://github.com/dartcv/NewMiko">NewMiko</a> &nbsp;•&nbsp;
+  <a href="https://github.com/LuckyPray/DexKit">DexKit</a> &nbsp;•&nbsp;
+  <a href="https://github.com/matsushita-takeo/MIUIX-KMP">MIUIX-KMP</a>
+</p>
 
 <br>
 

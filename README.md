@@ -161,11 +161,6 @@ OKK/
 
 ## 💬 交流反馈
 
-- [Telegram 交流群](https://t.me/OKK_YES)
-- [提交 Issues](https://github.com/angusdevgo/OKK/issues)
+[Telegram 交流群](https://t.me/OKK_YES)
 
 <br>
-
-<div align="center">
-  <sub>Made with ❤️ by Angus & Open Source Community</sub>
-</div>

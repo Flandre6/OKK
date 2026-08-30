@@ -1,20 +1,24 @@
-<div align="center">
+<p align="center">
+  <img src="./app/src/main/res/drawable/ic_launcher.png" width="120" height="120" alt="OKK Logo">
+</p>
 
-<img src="app/src/main/res/drawable/ic_launcher.png" alt="OKK Logo" width="108" height="108" style="border-radius: 22px;" />
+<h1 align="center">OKK</h1>
 
-# OKK
+<p align="center">
+  <b>基于 LSPosed / Xposed 的微信全能体验增强模块</b>
+</p>
 
-**基于 LSPosed / Xposed 的微信全能体验增强模块**
+<p align="center">
+  提供消息保护 · 聊天增强 · 会话分组 · 界面美化 · 实用工具 · 在线插件扩展
+</p>
 
-提供消息保护 · 聊天增强 · 会话分组 · 界面美化 · 实用工具 · 在线插件扩展
-
-[![Platform](https://img.shields.io/badge/Platform-Android-green.svg?style=flat-square&logo=android)](https://www.android.com/)
-[![Framework](https://img.shields.io/badge/Framework-LSPosed%20%2F%20libxposed-blue.svg?style=flat-square)](https://github.com/LSPosed/LSPosed)
-[![Language](https://img.shields.io/badge/Language-Kotlin-purple.svg?style=flat-square&logo=kotlin)](https://kotlinlang.org/)
-[![UI Style](https://img.shields.io/badge/UI-Compose%20%26%20MIUIX-ff69b4.svg?style=flat-square)](https://github.com/matsushita-takeo/MIUIX-KMP)
-[![Telegram](https://img.shields.io/badge/Telegram-%E5%AE%98%E6%96%B9%E4%BA%A4%E6%B5%81%E7%BE%A4-2CA5E0.svg?style=flat-square&logo=telegram)](https://t.me/OKK_YES)
-
-</div>
+<p align="center">
+  <a href="https://www.android.com/"><img src="https://img.shields.io/badge/Platform-Android-green.svg?style=flat-square&logo=android" alt="Platform"></a>
+  <a href="https://github.com/LSPosed/LSPosed"><img src="https://img.shields.io/badge/Framework-LSPosed%20%2F%20libxposed-blue.svg?style=flat-square" alt="Framework"></a>
+  <a href="https://kotlinlang.org/"><img src="https://img.shields.io/badge/Language-Kotlin-purple.svg?style=flat-square&logo=kotlin" alt="Language"></a>
+  <a href="https://github.com/matsushita-takeo/MIUIX-KMP"><img src="https://img.shields.io/badge/UI-Compose%20%26%20MIUIX-ff69b4.svg?style=flat-square" alt="UI Style"></a>
+  <a href="https://t.me/OKK_YES"><img src="https://img.shields.io/badge/Telegram-%E5%AE%98%E6%96%B9%E4%BA%A4%E6%B5%81%E7%BE%A4-2CA5E0.svg?style=flat-square&logo=telegram" alt="Telegram"></a>
+</p>
 
 ---
 

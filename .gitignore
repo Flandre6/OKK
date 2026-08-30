@@ -1,0 +1,31 @@
+# 构建产物
+.gradle/
+build/
+.kotlin/
+*.apk
+*.aab
+*.jar
+*.class
+
+# 本地配置与签名密钥（敏感，勿入库）
+local.properties
+*.keystore
+*.jks
+keystore.properties
+*.pem
+*.p12
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# 日志 / 临时
+*.log
+*.bak
+captures/
+_tmp_*/
+_fix_*/
+_patch_*/
+check*.py

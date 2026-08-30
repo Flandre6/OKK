@@ -1,0 +1,6 @@
+name=AChat
+author=Angus
+version=1.1.7
+minApiVersion=51
+targetApiVersion=102
+staticScope=true

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application
+        android:allowBackup="false"
+        android:label="HookMonitor"
+        android:theme="@style/Theme.Material3.DynamicColors.Light"
+        android:description="@string/app_name">
+
+        <meta-data android:name="xposedmodule" android:value="true"/>
+        <meta-data android:name="xposedminversion" android:value="82"/>
+        <meta-data android:name="xposedscope" android:resource="@array/xposedscope"/>
+        <meta-data android:name="xposeddescription" android:value="@string/xposeddescription"/>
+
+        <activity android:name="com.OKK.yes.monitor.SettingsActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+
+        <activity-alias android:name="com.OKK.yes.monitor.SettingsActivity.Hide"
+            android:label="HookMonitor" android:exported="true"
+            android:targetActivity="com.OKK.yes.monitor.SettingsActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS"/>
+            </intent-filter>
+        </activity-alias>
+    </application>
+</manifest>

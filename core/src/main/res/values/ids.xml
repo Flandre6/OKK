@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="abc_tag_message_object" type="id" />
+    <item name="abc_tag_message_holder" type="id" />
+    <item name="abc_tag_message_adapter" type="id" />
+    <item name="abc_tag_swipe_state" type="id" />
+    <item name="abc_tag_swipe_listener" type="id" />
+    <item name="abc_tag_swipe_target_row" type="id" />
+    <item name="abc_tag_custom_time" type="id" />
+    <item name="abc_tag_custom_time_msg_id" type="id" />
+    <item name="abc_tag_custom_time_hidden" type="id" />
+    <item name="abc_tag_detail_click_listener" type="id" />
+    <item name="abc_tag_bubble_source" type="id" />
+    <item name="abc_tag_bubble_is_send" type="id" />
+    <item name="abc_tag_bubble_msg_type" type="id" />
+    <item name="abc_tag_bubble_msg_id" type="id" />
+    <item name="abc_tag_bubble_supports_custom" type="id" />
+    <item name="abc_tag_bubble_original_background" type="id" />
+    <item name="abc_tag_enhanced_msg_id" type="id" />
+    <item name="abc_tag_enhanced_is_send" type="id" />
+    <item name="abc_tag_deferred_enhance_token" type="id" />
+    <item name="abc_tag_row_text" type="id" />
+    <item name="abc_tag_row_text_msg_id" type="id" />
+    <item name="abc_tag_swipe_active_row" type="id" />
+    <item name="abc_tag_swipe_active_message" type="id" />
+    <item name="abc_tag_auto_login_clicked" type="id" />
+    <item name="abc_tag_action_title_view" type="id" />
+    <item name="abc_tag_fab_root" type="id" />
+    <item name="abc_tag_fab_main" type="id" />
+    <item name="abc_tag_fab_menu" type="id" />
+    <item name="abc_tag_edit_msg_id" type="id" />
+    <item name="abc_tag_edit_checked" type="id" />
+    <item name="abc_tag_conv_group_header" type="id" />
+    <item name="abc_tag_conv_list_styled" type="id" />
+    <item name="abc_tag_conv_item_card" type="id" />
+    <item name="abc_tag_conv_row_styled" type="id" />
+    <item name="abc_tag_conv_row_night" type="id" />
+    <item name="abc_tag_conv_row_orig_padding" type="id" />
+    <item name="abc_tag_close_friend_title_long" type="id" />
+</resources>

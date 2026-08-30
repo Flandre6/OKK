@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  历史 PreferenceScreen 清单，实际 UI 由 MainActivity 动态构建。
+  仅登记已实现功能的键，与 MainActivity.Keys / ModulePrefs 一致。
+-->
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <PreferenceCategory android:title="聊天">
+        <SwitchPreferenceCompat
+            android:key="anti_revoke"
+            android:title="防撤回"
+            android:summary="拦截撤回指令，保留原消息"
+            android:defaultValue="true" />
+        <SwitchPreferenceCompat
+            android:key="revoke_notice_enabled"
+            android:title="撤回提醒"
+            android:defaultValue="true"
+            android:dependency="anti_revoke" />
+        <SwitchPreferenceCompat
+            android:key="anti_revoke_keep_self"
+            android:title="保留自己撤回"
+            android:defaultValue="false"
+            android:dependency="anti_revoke" />
+        <SwitchPreferenceCompat
+            android:key="swipe_quote"
+            android:title="左滑引用"
+            android:defaultValue="true" />
+        <SwitchPreferenceCompat
+            android:key="detail_enabled"
+            android:title="消息底部"
+            android:defaultValue="true" />
+        <SwitchPreferenceCompat
+            android:key="input_stats_enabled"
+            android:title="输入框统计"
+            android:defaultValue="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="消息保护">
+        <SwitchPreferenceCompat
+            android:key="anti_moments_delete"
+            android:title="朋友圈防删除"
+            android:defaultValue="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="美化">
+        <SwitchPreferenceCompat
+            android:key="bubble_enabled"
+            android:title="气泡皮肤"
+            android:defaultValue="true" />
+        <SwitchPreferenceCompat
+            android:key="round_avatar_enabled"
+            android:title="圆形头像"
+            android:defaultValue="false" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="辅助">
+        <SwitchPreferenceCompat
+            android:key="virtual_location_enabled"
+            android:title="虚拟定位"
+            android:summary="改写腾讯定位经纬度"
+            android:defaultValue="false" />
+        <!-- virtual_location_latitude / virtual_location_longitude 由 MainActivity 详情写 -->
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="界面">
+        <SwitchPreferenceCompat
+            android:key="bottom_tab_hide_title"
+            android:title="隐藏底栏标题"
+            android:defaultValue="true" />
+        <SwitchPreferenceCompat
+            android:key="night_mode"
+            android:title="夜间模式"
+            android:summary="仅 OKK 设置页"
+            android:defaultValue="false" />
+    </PreferenceCategory>
+
+</PreferenceScreen>

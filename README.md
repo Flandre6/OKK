@@ -141,11 +141,16 @@ OKK/
 
 ## 🤝 致谢
 
-[WAuxiliary](https://github.com/HdShare/WAuxiliary_Public) &nbsp;•&nbsp;
-[WeKit](https://github.com/Ujhhgtg/WeKit) &nbsp;•&nbsp;
-[HChat](https://t.me/Hchat_ci) &nbsp;•&nbsp;
-[NewMiko](https://github.com/dartcv/NewMiko) &nbsp;•&nbsp;
-[DexKit](https://github.com/LuckyPray/DexKit) &nbsp;•&nbsp;
+[WAuxiliary](https://github.com/HdShare/WAuxiliary_Public)
+
+[WeKit](https://github.com/Ujhhgtg/WeKit)
+
+[HChat](https://t.me/Hchat_ci)
+
+[NewMiko](https://github.com/dartcv/NewMiko)
+
+[DexKit](https://github.com/LuckyPray/DexKit)
+
 [MIUIX-KMP](https://github.com/matsushita-takeo/MIUIX-KMP)
 
 <br>

@@ -141,16 +141,12 @@ OKK/
 
 ## 🤝 致谢
 
-感谢以下开源项目与作者提供的设计思路与技术启发：
-
-<p>
-  <a href="https://github.com/HdShare/WAuxiliary_Public">WAuxiliary</a> &nbsp;•&nbsp;
-  <a href="https://github.com/Ujhhgtg/WeKit">WeKit</a> &nbsp;•&nbsp;
-  <a href="https://t.me/Hchat_ci">HChat</a> &nbsp;•&nbsp;
-  <a href="https://github.com/dartcv/NewMiko">NewMiko</a> &nbsp;•&nbsp;
-  <a href="https://github.com/LuckyPray/DexKit">DexKit</a> &nbsp;•&nbsp;
-  <a href="https://github.com/matsushita-takeo/MIUIX-KMP">MIUIX-KMP</a>
-</p>
+[WAuxiliary](https://github.com/HdShare/WAuxiliary_Public) &nbsp;•&nbsp;
+[WeKit](https://github.com/Ujhhgtg/WeKit) &nbsp;•&nbsp;
+[HChat](https://t.me/Hchat_ci) &nbsp;•&nbsp;
+[NewMiko](https://github.com/dartcv/NewMiko) &nbsp;•&nbsp;
+[DexKit](https://github.com/LuckyPray/DexKit) &nbsp;•&nbsp;
+[MIUIX-KMP](https://github.com/matsushita-takeo/MIUIX-KMP)
 
 <br>
 
@@ -160,8 +156,8 @@ OKK/
 
 ## 💬 交流反馈
 
-- **Telegram 交流群**：[OKK 官方交流群](https://t.me/OKK_YES)
-- **Bug 反馈与建议**：欢迎提交 [Issues](https://github.com/angusdevgo/OKK/issues)
+- [Telegram 交流群](https://t.me/OKK_YES)
+- [提交 Issues](https://github.com/angusdevgo/OKK/issues)
 
 <br>
 

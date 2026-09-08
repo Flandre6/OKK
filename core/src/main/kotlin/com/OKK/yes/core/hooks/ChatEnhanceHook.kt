@@ -1831,18 +1831,49 @@ object ChatEnhanceHook {
      * 通话：含通话文案/图标的带背景容器；兼容居中通话卡片。
      */
     private fun findVoiceCallBubbleView(root: View): View? {
-        // 1) 语音：AnimImageView → 只取直接父 ViewGroup（时长+波形那一层）
-        val anim = findFirstView(root) { it.javaClass.name.contains("AnimImageView") }
-        if (anim != null) {
-            val direct = anim.parent as? ViewGroup
-            if (direct != null &&
-                direct !== root &&
-                !direct.javaClass.name.contains("MaskLayout") &&
-                !containsViewMatching(direct) { it.javaClass.name.contains("ChattingAvatarImageView") }
-            ) {
-                return direct
+        // 1) 语音气泡识别：
+        // 在微信接收方语音布局 (vv.xml) 中，存在两个 AnimImageView：
+        //   - 一个是直接在内层 RelativeLayout 下的 bro (0x7f091073)，它的父容器是包含了昵称 brc 的 RelativeLayout！
+        //   - 另一个是真正包裹在气泡 FrameLayout (brr/brq) 内部的 brl (0x7f091070)。
+        // 若直接找第一个 AnimImageView 取 parent，会误匹配到外层 RelativeLayout，导致背景气泡把昵称也框进去！
+        // 正确策略：遍历收集所有 AnimImageView，优先选择父级非 RelativeLayout 且不含头像与 MaskLayout 的内层气泡容器（例如 FrameLayout brq/brr）
+        val voiceCandidates = mutableListOf<View>()
+        fun findAnimViews(v: View) {
+            if (v.javaClass.name.contains("AnimImageView")) {
+                voiceCandidates.add(v)
+            }
+            if (v is ViewGroup) {
+                for (i in 0 until v.childCount) {
+                    findAnimViews(v.getChildAt(i))
+                }
             }
         }
+        findAnimViews(root)
+        for (anim in voiceCandidates) {
+            val direct = anim.parent as? ViewGroup ?: continue
+            if (direct === root) continue
+            if (direct.javaClass.name.contains("MaskLayout")) continue
+            if (direct is android.widget.RelativeLayout) {
+                // 如果直接父级是 RelativeLayout，很可能是包含昵称的整行内容区，跳过
+                continue
+            }
+            if (containsViewMatching(direct) { it.javaClass.name.contains("ChattingAvatarImageView") }) continue
+            return direct
+        }
+        // 若上面由于特殊布局未命中，尝试降级但严格避开 RelativeLayout 根内容区
+        if (voiceCandidates.isNotEmpty()) {
+            for (anim in voiceCandidates) {
+                val direct = anim.parent as? ViewGroup ?: continue
+                if (direct !== root &&
+                    !direct.javaClass.name.contains("MaskLayout") &&
+                    direct !is android.widget.RelativeLayout &&
+                    !containsViewMatching(direct) { it.javaClass.name.contains("ChattingAvatarImageView") }
+                ) {
+                    return direct
+                }
+            }
+        }
+
         // 2) 通话记录：文案匹配（语音通话/视频通话/通话时长/未接等）
         val callLabel = findFirstView(root) { v ->
             if (v !is TextView || v.visibility != View.VISIBLE) return@findFirstView false

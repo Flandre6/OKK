@@ -3,24 +3,24 @@ package com.OKK.yes.core.hooks
 import android.app.AlertDialog
 import android.content.ContentValues
 import android.content.Context
-import android.os.Build
-import android.os.Process
-import android.text.InputType
-import android.util.Log
-import android.view.Menu
-import android.view.MenuItem
-import android.view.View
-import android.widget.EditText
-import android.widget.TextView
-import android.widget.Toast
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
+import android.os.Process
+import android.text.InputType
+import android.text.TextUtils
+import android.util.Log
 import android.view.Gravity
+import android.view.Menu
+import android.view.MenuItem
+import android.view.View
 import android.view.ViewGroup
+import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.TextView
+import android.widget.Toast
 import com.OKK.yes.core.hooks.ui.StyledDialogs
-
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
@@ -31,13 +31,16 @@ import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.util.Collections
 import java.util.IdentityHashMap
-import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.ZipFile
 
-/** Local-only message editing. The WeChat message database is never changed. */
+/**
+ * 微信消息本地修改 Hook。
+ * 支持 TextView 与 MMNeat7extView / NeatTextView 聊天控件。
+ */
 object EditMessageHook {
     private const val TAG = "OKK-EditMsg"
     private const val KEY = "edit_message"
@@ -51,6 +54,8 @@ object EditMessageHook {
     private val hookedSelectionMethods = AtomicInteger(0)
     private val editedTexts = ConcurrentHashMap<String, String>()
     private val editedByMsgId = ConcurrentHashMap<Long, String>()
+    private val originalByMsgId = ConcurrentHashMap<Long, String>()
+    private val originalRawByMsgId = ConcurrentHashMap<Long, String>()
     private val msgGetterCache = ConcurrentHashMap<Class<*>, Method?>()
     private val msgFieldCache = ConcurrentHashMap<Class<*>, Field?>()
     private val dbMethodCache = ConcurrentHashMap<Class<*>, Method?>()
@@ -68,7 +73,7 @@ object EditMessageHook {
     private var activeMessage: MessageRef? = null
 
     @Volatile
-    private var activeTarget: WeakReference<TextView>? = null
+    private var activeTarget: WeakReference<View>? = null
 
     @Volatile
     private var activeOriginalText: String? = null
@@ -91,90 +96,85 @@ object EditMessageHook {
         val rawContent: String,
         val message: WeakReference<Any>,
         val view: WeakReference<View>,
-        val target: WeakReference<TextView>
+        val target: WeakReference<View>
     )
 
     fun install(context: Context, classLoader: ClassLoader, modulePath: String? = null) {
         if (!installed.compareAndSet(false, true)) return
         xlog("install enabled=${isEnabled()}")
         hookDatabaseCapture(classLoader)
-        hookTextRebind()
         hookLongPress()
+        hookChattingLongClick(classLoader)
+        hookChattingMenuDirect(classLoader)
         hookWechatMenu(classLoader)
+        hookTextRebind(classLoader)
         hookMenuItemClick(classLoader)
         hookMenuSelection(context, classLoader, modulePath)
     }
 
     fun isEnabled(): Boolean =
-        runCatching { PublicConfigStore.getBoolean(KEY, false) }.getOrDefault(false)
+        PublicConfigStore.getBoolean(KEY, false)
 
     private fun hookDatabaseCapture(classLoader: ClassLoader) {
         if (!dbHookInstalled.compareAndSet(false, true)) return
-        val dbClass = findDbClass(classLoader)
-        if (dbClass == null) {
-            xlog("database class not ready")
-            return
-        }
-        var count = 0
-        dbClass.declaredMethods
-            .filter { it.name in setOf("rawQuery", "query") }
-            .forEach { method ->
-                runCatching {
-                    method.isAccessible = true
-                    XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
-                            rememberDb(param.thisObject)
-                        }
-                    })
-                    count++
-                }
+        val dbClass = findDbClass(classLoader) ?: return
+        runCatching {
+            val queryMethods = dbClass.declaredMethods
+                .filter { it.name in setOf("rawQuery", "rawQueryWithFactory", "query", "queryWithFactory") }
+                .distinctBy { "${it.name}${it.parameterTypes.size}" }
+            queryMethods.forEach { method ->
+                method.isAccessible = true
+                XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        rememberDb(param.thisObject)
+                    }
+                })
             }
-        xlog("database capture hooks=$count on ${dbClass.name}")
+            xlog("database observer installed on ${dbClass.name} (methods=${queryMethods.size})")
+        }.onFailure {
+            xlog("database observer fail: ${it.message}")
+        }
     }
 
     private fun findDbClass(classLoader: ClassLoader): Class<*>? {
-        return listOf(
+        val candidates = listOf(
             "com.tencent.wcdb.database.SQLiteDatabase",
+            "com.tencent.wcdb.database.SQLiteDirectCursor",
+            "com.tencent.wcdb.database.SQLiteAsyncCursor",
             "android.database.sqlite.SQLiteDatabase"
-        ).firstNotNullOfOrNull { className ->
-            runCatching { XposedHelpers.findClass(className, classLoader) }.getOrNull()
+        )
+        return candidates.firstNotNullOfOrNull { name ->
+            runCatching { XposedHelpers.findClass(name, classLoader) }.getOrNull()
         }
     }
 
     private fun rememberDb(db: Any?) {
-        if (db == null) return
+        db ?: return
         if (dbCaptureFull) return
+        if (!hasDbUpdate(db)) return
         synchronized(dbIdentitySeen) {
-            if (dbCaptureFull) return
-            if (dbIdentitySeen.contains(db)) return
-            if (dbList.any { it === db }) {
-                dbIdentitySeen.add(db)
-                return
-            }
-            if (dbClassUpdateCache.computeIfAbsent(db.javaClass) { hasDbUpdateClass(it) } != true) return
-            dbIdentitySeen.add(db)
+            if (dbCaptureFull || !dbIdentitySeen.add(db)) return
+            dbList += db
             if (dbList.size >= 4) {
                 dbCaptureFull = true
-                return
+                dbIdentitySeen.clear()
+            }
+            xlog("captured db instance count=${dbList.size} class=${db.javaClass.name}")
+        }
+    }
+
+    private fun hasDbUpdateClass(clazz: Class<*>): Boolean =
+        dbClassUpdateCache.computeIfAbsent(clazz) { c ->
+            c.methods.any {
+                it.name in setOf("update", "updateWithOnConflict") &&
+                    it.parameterTypes.size >= 4 &&
+                    it.parameterTypes[0] == String::class.java &&
+                    ContentValues::class.java.isAssignableFrom(it.parameterTypes[1])
             }
         }
-        dbList.add(db)
-        if (dbList.size >= 4) dbCaptureFull = true
-        if (dbList.size <= 2) xlog("remember db=${db.javaClass.name} total=${dbList.size}")
-    }
 
-    private fun hasDbUpdateClass(clazz: Class<*>): Boolean {
-        return clazz.methods.any {
-            it.name == "update" &&
-                it.parameterTypes.size >= 4 &&
-                it.parameterTypes[0] == String::class.java &&
-                ContentValues::class.java.isAssignableFrom(it.parameterTypes[1])
-        }
-    }
-
-    private fun hasDbUpdate(db: Any): Boolean {
-        return dbClassUpdateCache.computeIfAbsent(db.javaClass) { hasDbUpdateClass(it) }
-    }
+    private fun hasDbUpdate(db: Any): Boolean =
+        hasDbUpdateClass(db.javaClass)
 
     private fun hookLongPress() {
         runCatching {
@@ -185,12 +185,13 @@ object EditMessageHook {
                     val view = param.thisObject as? View ?: return
                     if (!inChatting(view)) return
                     val target = editableText(view) ?: return
-                    activeMessage = messageRefFromView(view, target)
+                    val ref = messageRefFromView(view, target)
+                    activeMessage = ref
                     activeTarget = WeakReference(target)
-                    activeOriginalText = activeMessage?.content ?: resolveOriginalText(target)
+                    activeOriginalText = ref?.content ?: resolveOriginalText(target)
                     activeAt = System.currentTimeMillis()
                     menuShown = false
-                    xlog("long press target=${target.javaClass.name} text=${shortLog(target.text?.toString().orEmpty())}")
+                    xlog("long press target=${target.javaClass.name} text=${shortLog(getViewText(target))}")
                 }
             })
             xlog("long-press observer installed")
@@ -199,40 +200,164 @@ object EditMessageHook {
         }
     }
 
-    private fun hookWechatMenu(classLoader: ClassLoader) {
-        // l75.g4 仅 8.0.69 存在；其它版本找 ContextMenu 实现类
-        val menuClasses = linkedSetOf<Class<*>>()
+    private fun hookChattingLongClick(classLoader: ClassLoader) {
         runCatching {
-            menuClasses += XposedHelpers.findClass("l75.g4", classLoader)
+            val q0Class = runCatching {
+                XposedHelpers.findClass("com.tencent.mm.ui.chatting.viewitems.q0", classLoader)
+            }.getOrNull() ?: return
+            val onLongClickMethod = q0Class.declaredMethods.firstOrNull {
+                it.name == "onLongClick" && it.parameterTypes.size == 1 && View::class.java.isAssignableFrom(it.parameterTypes[0])
+            } ?: return
+            onLongClickMethod.isAccessible = true
+            XposedBridge.hookMethod(onLongClickMethod, object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    if (!isEnabled()) return
+                    val view = param.args.firstOrNull() as? View ?: return
+                    val target = editableText(view) ?: view
+                    val ref = messageRefFromView(view, target)
+                    activeMessage = ref
+                    activeTarget = WeakReference(target)
+                    activeOriginalText = ref?.content ?: resolveOriginalText(target)
+                    activeAt = System.currentTimeMillis()
+                    menuShown = false
+                    xlog("chatting onLongClick view=${view.javaClass.name} msgId=${ref?.msgId}")
+                }
+            })
+            xlog("chatting long-click hook installed on q0")
+        }.onFailure {
+            xlog("chatting long-click hook fail: ${it.message}")
         }
-        // 常见邻近混淆 + 反射扫接口（轻量：仅已知候选）
-        for (name in listOf(
-            "l75.g4", "m75.g4", "k75.g4", "n75.g4", "l65.g4", "l85.g4",
-            "l75.f4", "l75.h4"
-        )) {
-            runCatching {
-                val c = XposedHelpers.findClass(name, classLoader)
-                if (Menu::class.java.isAssignableFrom(c)) menuClasses += c
-            }
-        }
-        var hooked = 0
-        for (menuClass in menuClasses) {
-            if (!Menu::class.java.isAssignableFrom(menuClass) &&
-                !menuClass.interfaces.any { it.name.contains("Menu") }
-            ) {
-                // 仍尝试：微信菜单类 implements ContextMenu
-                if (!menuClass.interfaces.any { it == android.view.ContextMenu::class.java }) {
-                    continue
+    }
+
+    private fun hookChattingMenuDirect(classLoader: ClassLoader) {
+        // 1. Direct hook m0.a(ContextMenu, View, ContextMenuInfo)
+        runCatching {
+            val m0Class = runCatching {
+                XposedHelpers.findClass("com.tencent.mm.ui.chatting.viewitems.m0", classLoader)
+            }.getOrNull()
+            if (m0Class != null) {
+                val createMethod = m0Class.declaredMethods.firstOrNull { m ->
+                    m.parameterTypes.size == 3 &&
+                        View::class.java.isAssignableFrom(m.parameterTypes[1])
+                }
+                if (createMethod != null) {
+                    createMethod.isAccessible = true
+                    XposedBridge.hookMethod(createMethod, object : XC_MethodHook() {
+                        override fun afterHookedMethod(param: MethodHookParam) {
+                            if (!isEnabled()) return
+                            val menu = param.args.getOrNull(0) as? Menu ?: return
+                            val row = param.args.getOrNull(1) as? View ?: return
+                            val target = editableText(row) ?: row
+                            val ref = messageRefFromView(row, target) ?: return
+                            activeMessage = ref
+                            activeTarget = WeakReference(target)
+                            activeOriginalText = ref.content
+                            activeAt = System.currentTimeMillis()
+                            menuShown = true
+                            ensureEditItem(menu)
+                            xlog("m0.a direct bind msgId=${ref.msgId} text=${shortLog(ref.content)}")
+                        }
+                    })
+                    xlog("direct hook m0.a installed")
                 }
             }
+        }.onFailure {
+            xlog("direct hook m0.a fail: ${it.message}")
+        }
+
+        // 2. Direct hook p0.onMMMenuItemSelected(MenuItem, int)
+        runCatching {
+            val p0Class = runCatching {
+                XposedHelpers.findClass("com.tencent.mm.ui.chatting.viewitems.p0", classLoader)
+            }.getOrNull()
+            if (p0Class != null) {
+                val selectMethod = p0Class.declaredMethods.firstOrNull { m ->
+                    m.name == "onMMMenuItemSelected" &&
+                        m.parameterTypes.size == 2 &&
+                        MenuItem::class.java.isAssignableFrom(m.parameterTypes[0]) &&
+                        m.parameterTypes[1] == Int::class.javaPrimitiveType
+                }
+                if (selectMethod != null) {
+                    selectMethod.isAccessible = true
+                    XposedBridge.hookMethod(selectMethod, object : XC_MethodHook() {
+                        override fun beforeHookedMethod(param: MethodHookParam) {
+                            if (!isEnabled()) return
+                            val item = param.args.getOrNull(0) as? MenuItem ?: return
+                            if (item.itemId != EDIT_ID) return
+                            param.result = null // 阻止微信后续处理
+
+                            var target = activeTarget?.get()
+                            var ref = activeMessage
+                            if (ref == null || target == null) {
+                                // 尝试从 p0 自身字段提取 ct (字段 d)
+                                val tag = runCatching {
+                                    val f = p0Class.declaredFields.firstOrNull { it.type.name.endsWith("ct") }
+                                    f?.isAccessible = true
+                                    f?.get(param.thisObject)
+                                }.getOrNull()
+                                if (tag != null) {
+                                    val msg = messageFromTag(tag)
+                                    if (msg != null && isEditableTextMessage(msg)) {
+                                        val raw = readMessageContent(msg).orEmpty()
+                                        val c = stripSenderPrefix(raw)
+                                        val id = readMsgId(msg)
+                                        if (id > 0L) {
+                                            ref = MessageRef(id, c, raw, WeakReference(msg), WeakReference(target ?: View(XposedBridge::class.java.classLoader.let { null })), WeakReference(target ?: View(XposedBridge::class.java.classLoader.let { null })))
+                                            activeMessage = ref
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (target == null) {
+                                target = ref?.target?.get() ?: ref?.view?.get()
+                            }
+                            if (target != null) {
+                                menuShown = true
+                                activeTarget = WeakReference(target)
+                                activeOriginalText = ref?.content ?: resolveOriginalText(target)
+                                activeAt = System.currentTimeMillis()
+                                showActiveEditDialog(target)
+                                xlog("direct hook p0 selected success msgId=${ref?.msgId}")
+                            } else {
+                                xlog("direct hook p0 selected fail: target view null")
+                            }
+                        }
+                    })
+                    xlog("direct hook p0.onMMMenuItemSelected installed")
+                }
+            }
+        }.onFailure {
+            xlog("direct hook p0 fail: ${it.message}")
+        }
+    }
+
+    private fun hookWechatMenu(classLoader: ClassLoader) {
+        val menuClasses = linkedSetOf<Class<*>>()
+        for (pkg in listOf("ra5", "o95", "l75", "m75", "k75", "n75", "l65", "l85", "p95", "n95")) {
+            for (name in listOf("g4", "f4", "h4", "d4", "e4")) {
+                runCatching {
+                    val c = XposedHelpers.findClass("$pkg.$name", classLoader)
+                    if (android.view.ContextMenu::class.java.isAssignableFrom(c) ||
+                        Menu::class.java.isAssignableFrom(c)
+                    ) {
+                        menuClasses += c
+                    }
+                }
+            }
+        }
+
+        var hooked = 0
+        for (menuClass in menuClasses) {
             val methods = menuClass.declaredMethods
                 .filter {
                     it.name == "add" ||
-                        (it.name.length <= 2 && it.parameterTypes.size in 1..4)
+                        (it.name.length <= 2 && it.parameterTypes.size in 1..5)
                 }
                 .distinctBy { "${it.name}${it.parameterTypes.contentToString()}" }
             methods.forEach { method ->
                 runCatching {
+                    method.isAccessible = true
                     XposedBridge.hookMethod(method, object : XC_MethodHook() {
                         override fun afterHookedMethod(param: MethodHookParam) {
                             if (!isEnabled()) return
@@ -244,20 +369,7 @@ object EditMessageHook {
                 }
             }
         }
-        // 兜底：系统 MenuBuilder（部分机型弹窗）
-        runCatching {
-            val mb = XposedHelpers.findClass("com.android.internal.view.menu.MenuBuilder", classLoader)
-            for (m in mb.declaredMethods.filter { it.name == "add" }) {
-                XposedBridge.hookMethod(m, object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        if (!isEnabled()) return
-                        ensureEditItem(param.thisObject as? Menu ?: return)
-                    }
-                })
-                hooked++
-            }
-        }
-        xlog("wechat context menu hooks=$hooked classes=${menuClasses.map { it.name }}")
+        xlog("wechat menu add hook installed count=$hooked classes=${menuClasses.size}")
     }
 
     private fun ensureEditItem(menu: Menu) {
@@ -291,7 +403,8 @@ object EditMessageHook {
         }
     }
 
-    private fun hookTextRebind() {
+    private fun hookTextRebind(classLoader: ClassLoader) {
+        // 1. Hook TextView.setText(CharSequence)
         runCatching {
             val method = TextView::class.java.getDeclaredMethod("setText", CharSequence::class.java)
             XposedBridge.hookMethod(method, object : XC_MethodHook() {
@@ -301,7 +414,6 @@ object EditMessageHook {
                     val view = param.thisObject as? TextView ?: return
                     if (view.getTag(com.OKK.yes.core.R.id.abc_tag_custom_time) == true) return
 
-                    // Fast-path 1: Instant tag lookup if view was scanned before
                     val tagVal = view.getTag(com.OKK.yes.core.R.id.abc_tag_edit_msg_id)
                     if (tagVal != null) {
                         val cachedMsgId = tagVal as? Long ?: -1L
@@ -313,7 +425,6 @@ object EditMessageHook {
                         return
                     }
 
-                    // Fast-path 2: Check if view is inside chat UI
                     if (!inChatting(view)) {
                         view.setTag(com.OKK.yes.core.R.id.abc_tag_edit_msg_id, -1L)
                         return
@@ -325,20 +436,17 @@ object EditMessageHook {
                         return
                     }
 
-                    // Fast-path 3: O(1) exact content text map
                     val editedByText = editedTexts[incoming]
                     if (editedByText != null) {
                         if (editedByText != incoming) param.args[0] = editedByText
                         return
                     }
 
-                    // Fast-path 4: Filter out non-message view candidates
                     if (!isMessageTextCandidate(view)) {
                         view.setTag(com.OKK.yes.core.R.id.abc_tag_edit_msg_id, -1L)
                         return
                     }
 
-                    // Slow-path: scan view tree ONCE and store tag permanently
                     val msgId = msgIdFromViewTree(view)
                     view.setTag(com.OKK.yes.core.R.id.abc_tag_edit_msg_id, if (msgId > 0L) msgId else -1L)
                     if (msgId > 0L) {
@@ -349,19 +457,82 @@ object EditMessageHook {
                     }
                 }
             })
-            xlog("text rebind hook installed with fast-path tag caching")
+            xlog("TextView.setText rebind hook installed")
         }.onFailure {
-            xlog("text rebind hook fail: ${it.message}")
+            xlog("TextView.setText rebind hook fail: ${it.message}")
+        }
+
+        // 2. Hook NeatTextView.b(CharSequence) & NeatTextView.c(CharSequence, ...)
+        runCatching {
+            val neatClass = runCatching {
+                XposedHelpers.findClass("com.tencent.neattextview.textview.view.NeatTextView", classLoader)
+            }.getOrNull() ?: return
+            val bMethod = neatClass.declaredMethods.firstOrNull {
+                it.name == "b" && it.parameterTypes.size == 1 && it.parameterTypes[0] == CharSequence::class.java
+            }
+            if (bMethod != null) {
+                bMethod.isAccessible = true
+                XposedBridge.hookMethod(bMethod, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        if (applyingText || !isEnabled()) return
+                        if (editedByMsgId.isEmpty() && editedTexts.isEmpty()) return
+                        val view = param.thisObject as? View ?: return
+
+                        val tagVal = view.getTag(com.OKK.yes.core.R.id.abc_tag_edit_msg_id)
+                        if (tagVal != null) {
+                            val cachedMsgId = tagVal as? Long ?: -1L
+                            if (cachedMsgId <= 0L) return
+                            val edited = editedByMsgId[cachedMsgId]
+                            if (edited != null) {
+                                param.args[0] = edited
+                            }
+                            return
+                        }
+
+                        if (!inChatting(view)) {
+                            view.setTag(com.OKK.yes.core.R.id.abc_tag_edit_msg_id, -1L)
+                            return
+                        }
+
+                        val incoming = param.args.getOrNull(0)?.toString() ?: return
+                        if (incoming.length < 1 || incoming.length > 3000) {
+                            view.setTag(com.OKK.yes.core.R.id.abc_tag_edit_msg_id, -1L)
+                            return
+                        }
+
+                        val editedByText = editedTexts[incoming]
+                        if (editedByText != null) {
+                            if (editedByText != incoming) param.args[0] = editedByText
+                            return
+                        }
+
+                        if (!isMessageTextCandidate(view)) {
+                            view.setTag(com.OKK.yes.core.R.id.abc_tag_edit_msg_id, -1L)
+                            return
+                        }
+
+                        val msgId = msgIdFromViewTree(view)
+                        view.setTag(com.OKK.yes.core.R.id.abc_tag_edit_msg_id, if (msgId > 0L) msgId else -1L)
+                        if (msgId > 0L) {
+                            val edited = editedByMsgId[msgId]
+                            if (edited != null && edited != incoming) {
+                                param.args[0] = edited
+                            }
+                        }
+                    }
+                })
+                xlog("NeatTextView.b rebind hook installed")
+            }
+        }.onFailure {
+            xlog("NeatTextView rebind hook fail: ${it.message}")
         }
     }
 
     private fun hookMenuItemClick(classLoader: ClassLoader) {
-        // l75.h4 仅 69；优先 hook MenuItem 点击接口，再试混淆候选
         var ok = false
         runCatching {
-            // 无法直接 hook OnMenuItemClickListener 接口；试混淆 MenuItem 实现 + 系统 MenuItemImpl
             for (name in listOf(
-                "l75.h4", "m75.h4", "k75.h4", "n75.h4", "l65.h4", "l85.h4", "l75.i4"
+                "o95.h4", "l75.h4", "m75.h4", "k75.h4", "n75.h4", "l65.h4", "l85.h4", "p95.h4", "n95.h4"
             )) {
                 val clazz = runCatching { XposedHelpers.findClass(name, classLoader) }.getOrNull()
                     ?: continue
@@ -390,16 +561,14 @@ object EditMessageHook {
                 }
             }
         }
-        // 系统 MenuItemImpl.invoke
         runCatching {
             val impl = XposedHelpers.findClass(
                 "com.android.internal.view.menu.MenuItemImpl",
                 classLoader
             )
-            val invoke = impl.declaredMethods.firstOrNull {
-                it.name == "invoke" && it.parameterTypes.isEmpty()
-            } ?: return@runCatching
-            XposedBridge.hookMethod(invoke, object : XC_MethodHook() {
+            val method = impl.getDeclaredMethod("invoke")
+            method.isAccessible = true
+            XposedBridge.hookMethod(method, object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     if (!isEnabled()) return
                     val item = param.thisObject as? MenuItem ?: return
@@ -409,11 +578,12 @@ object EditMessageHook {
                     menuShown = true
                     showActiveEditDialog(target)
                     param.result = true
+                    xlog("edit menu item dispatched via MenuItemImpl.invoke")
                 }
             })
             ok = true
         }
-        xlog(if (ok) "wechat menu item click hook installed" else "menu item click hook skipped (long-press path still works)")
+        xlog(if (ok) "wechat menu item click hook installed" else "menu item click hook skipped")
     }
 
     private fun hookMenuSelection(context: Context, classLoader: ClassLoader, modulePath: String?) {
@@ -466,7 +636,7 @@ object EditMessageHook {
                     if (!isEnabled()) return
                     val menu = param.args.firstOrNull { it is Menu } as? Menu ?: return
                     val row = param.args.firstOrNull { it is View } as? View ?: return
-                    val target = editableText(row) ?: return
+                    val target = editableText(row) ?: row
                     val ref = messageRefFromView(row, target) ?: return
                     activeMessage = ref
                     activeTarget = WeakReference(target)
@@ -519,79 +689,68 @@ object EditMessageHook {
     private fun findEditIcon(context: Context?): Int? {
         context ?: return null
         val resources = context.resources
-        val packageName = context.packageName
-        return listOf("raw", "drawable")
-            .asSequence()
-            .map { type -> resources.getIdentifier("icons_filled_edit_photo_pencil", type, packageName) }
-            .firstOrNull { it != 0 }
+        val names = listOf("icons_filled_pencil", "icons_filled_edit", "icons_outlined_pencil", "icons_outlined_edit")
+        return names.firstNotNullOfOrNull { name ->
+            val id = resources.getIdentifier(name, "raw", context.packageName)
+            if (id != 0) id else null
+        }
     }
 
-    private fun menuContext(menu: Menu, target: TextView): Context? {
-        return runCatching { target.context }.getOrNull()
-            ?: runCatching { menu.javaClass.getDeclaredField("mContext").apply { isAccessible = true }.get(menu) as? Context }.getOrNull()
-    }
+    private fun menuContext(menu: Menu, target: View): Context? =
+        (menu as? android.view.ContextMenu)?.let { target.context } ?: target.context
 
     private fun loadDexKitNative(context: Context, modulePath: String?) {
-        if (dexKitLoaded.get()) return
-        runCatching { System.loadLibrary("dexkit") }.onSuccess {
-            dexKitLoaded.set(true)
+        if (!dexKitLoaded.compareAndSet(false, true)) return
+        runCatching {
+            System.loadLibrary("dexkit")
+            xlog("loaded native dexkit library")
             return
         }
-        val apkPath = modulePath ?: error("module path unavailable for libdexkit.so")
-        val abi = if (Process.is64Bit()) Build.SUPPORTED_64_BIT_ABIS.firstOrNull() ?: "arm64-v8a"
-        else Build.SUPPORTED_32_BIT_ABIS.firstOrNull() ?: "armeabi-v7a"
-        val out = File(context.cacheDir, "abc_${abi}_libdexkit.so")
-        ZipFile(apkPath).use { zip ->
-            val entry = zip.getEntry("lib/$abi/libdexkit.so") ?: error("lib/$abi/libdexkit.so not found")
-            zip.getInputStream(entry).use { input -> out.outputStream().use { output -> input.copyTo(output) } }
+        val path = modulePath ?: return
+        val zip = runCatching { ZipFile(File(path)) }.getOrNull() ?: return
+        val abis = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            Build.SUPPORTED_ABIS.toList()
+        } else {
+            listOf(Build.CPU_ABI, Build.CPU_ABI2).filter { !it.isNullOrBlank() }
         }
+        val entry = abis.firstNotNullOfOrNull { abi -> zip.getEntry("lib/$abi/libdexkit.so") } ?: return
+        val out = File(context.cacheDir, "abc_${Process.myPid()}_libdexkit.so")
+        zip.getInputStream(entry).use { src -> out.outputStream().use { dst -> src.copyTo(dst) } }
         System.load(out.absolutePath)
-        dexKitLoaded.set(true)
+        xlog("loaded native dexkit library from cache path=${out.absolutePath}")
     }
 
     private fun descriptorToMethod(descriptor: String, classLoader: ClassLoader): Method {
-        val arrow = descriptor.indexOf("->")
-        val argsStart = descriptor.indexOf('(', arrow)
-        require(arrow > 1 && argsStart > arrow) { descriptor }
-        val className = descriptor.substring(1, arrow - 1).replace('/', '.')
-        val methodName = descriptor.substring(arrow + 2, argsStart)
-        val signature = descriptor.substring(argsStart)
-        var clazz: Class<*>? = classLoader.loadClass(className)
-        while (clazz != null) {
-            clazz.declaredMethods.firstOrNull { method -> method.name == methodName && methodSignature(method) == signature }?.let {
-                it.isAccessible = true
-                return it
-            }
-            clazz = clazz.superclass
-        }
-        error("method not found: $descriptor")
+        val (declaringRaw, signature) = descriptor.split("->", limit = 2)
+        val declaring = declaringRaw.removePrefix("L").removeSuffix(";").replace('/', '.')
+        val clazz = XposedHelpers.findClass(declaring, classLoader)
+        return clazz.declaredMethods.firstOrNull { methodSignature(it) == signature }
+            ?: clazz.methods.first { methodSignature(it) == signature }
     }
 
     private fun methodSignature(method: Method): String = buildString {
+        append(method.name)
         append('(')
         method.parameterTypes.forEach { append(typeSignature(it)) }
         append(')')
         append(typeSignature(method.returnType))
     }
 
-    private fun typeSignature(type: Class<*>): String {
-        if (type.isPrimitive) return when (type) {
-            java.lang.Integer.TYPE -> "I"
-            java.lang.Void.TYPE -> "V"
-            java.lang.Boolean.TYPE -> "Z"
-            java.lang.Character.TYPE -> "C"
-            java.lang.Byte.TYPE -> "B"
-            java.lang.Short.TYPE -> "S"
-            java.lang.Float.TYPE -> "F"
-            java.lang.Long.TYPE -> "J"
-            java.lang.Double.TYPE -> "D"
-            else -> "V"
-        }
-        if (type.isArray) return type.name.replace('.', '/')
-        return "L${type.name.replace('.', '/')};"
+    private fun typeSignature(type: Class<*>): String = when {
+        type == Void.TYPE -> "V"
+        type == Boolean::class.javaPrimitiveType -> "Z"
+        type == Byte::class.javaPrimitiveType -> "B"
+        type == Char::class.javaPrimitiveType -> "C"
+        type == Short::class.javaPrimitiveType -> "S"
+        type == Int::class.javaPrimitiveType -> "I"
+        type == Long::class.javaPrimitiveType -> "J"
+        type == Float::class.javaPrimitiveType -> "F"
+        type == Double::class.javaPrimitiveType -> "D"
+        type.isArray -> "[" + typeSignature(type.componentType)
+        else -> "L" + type.name.replace('.', '/') + ";"
     }
 
-    private fun messageRefFromView(view: View, target: TextView): MessageRef? {
+    private fun messageRefFromView(view: View, target: View): MessageRef? {
         val message = messageFromTag(view.tag) ?: findMessageObject(view, 0, identitySet())
         val msgId = message?.let(::readMsgId) ?: 0L
         if (message == null || msgId <= 0L) return null
@@ -632,25 +791,34 @@ object EditMessageHook {
             root.forEach { findMessageObject(it, depth + 1, seen)?.let { found -> return found } }
             return null
         }
-        val name = root.javaClass.name
-        if (name.startsWith("java.") || name.startsWith("android.") || name.startsWith("kotlin.")) return null
-        allFields(root.javaClass).forEach { field ->
-            if (field.type.isPrimitive || field.type.isArray || field.type == String::class.java) return@forEach
+        val clazz = root.javaClass
+        if (clazz.name.startsWith("java.") || clazz.name.startsWith("android.")) return null
+        for (field in allFields(clazz)) {
+            if (isMessageClass(field.type)) {
+                runCatching {
+                    field.isAccessible = true
+                    field.get(root)
+                }.getOrNull()?.takeIf { readMsgId(it) > 0L }?.let { return it }
+            }
+        }
+        for (field in allFields(clazz)) {
             val value = runCatching {
                 field.isAccessible = true
                 field.get(root)
-            }.getOrNull()
+            }.getOrNull() ?: continue
             findMessageObject(value, depth + 1, seen)?.let { return it }
         }
         return null
     }
 
     private fun msgIdFromViewTree(view: View): Long {
-        var current: Any? = view
-        repeat(10) {
-            val v = current as? View ?: return 0L
-            messageRefFromView(v, view as? TextView ?: activeTarget?.get() ?: return 0L)?.let { return it.msgId }
-            current = v.parent
+        var current: View? = view
+        repeat(8) {
+            val v = current ?: return 0L
+            val tag = v.tag
+            messageFromTag(tag)?.let { return readMsgId(it) }
+            messageRefFromView(v, view)?.let { return it.msgId }
+            current = v.parent as? View
         }
         return 0L
     }
@@ -659,11 +827,11 @@ object EditMessageHook {
         readNumber(message, "getMsgId", "getMsgID", "field_msgId", "msgId", "msgID", "id")?.toLong() ?: 0L
 
     private fun readMessageContent(message: Any): String? =
-        readString(message, "getContent", "field_content", "content")
+        readString(message, "S1", "getContent", "field_content", "content", "j")
 
     private fun writeMessageContent(message: Any, content: String): Boolean {
         allMethods(message.javaClass).firstOrNull {
-            it.name in setOf("setContent", "setMsgContent") &&
+            it.name in setOf("c1", "setContent", "setMsgContent") &&
                 it.parameterTypes.size == 1 &&
                 it.parameterTypes[0] == String::class.java
         }?.let { method ->
@@ -695,16 +863,19 @@ object EditMessageHook {
         val type = readNumber(message, "getType", "field_type", "type")?.toInt()
         val content = readMessageContent(message).orEmpty()
         if (type != null && type != 1) return false
-        if (content.isBlank() || content.length > 4000) return false
-        if (content.trimStart().startsWith("<")) return false
-        if (looksLikeMetaText(content)) return false
+        if (content.length > 4000) return false
+        if (content.startsWith("<msg>") || content.startsWith("~SEMI_XML~")) return false
         return true
     }
 
     private fun isMessageObject(value: Any): Boolean = isMessageClass(value.javaClass)
 
     private fun isMessageClass(clazz: Class<*>): Boolean =
-        clazz.name.startsWith("com.tencent.mm.storage.")
+        clazz.name.startsWith("com.tencent.mm.storage.") ||
+        clazz.name == "ms0.m1" ||
+        clazz.name == "tl.b8" ||
+        clazz.name == "nt0.m1" ||
+        clazz.name == "sm.b8"
 
     private fun readString(target: Any, vararg names: String): String? {
         names.forEach { name ->
@@ -747,19 +918,21 @@ object EditMessageHook {
     }
 
     private fun boxType(type: Class<*>): Class<*> = when (type) {
-        java.lang.Integer.TYPE -> java.lang.Integer::class.java
-        java.lang.Long.TYPE -> java.lang.Long::class.java
-        java.lang.Short.TYPE -> java.lang.Short::class.java
-        java.lang.Byte.TYPE -> java.lang.Byte::class.java
-        java.lang.Float.TYPE -> java.lang.Float::class.java
-        java.lang.Double.TYPE -> java.lang.Double::class.java
+        Boolean::class.javaPrimitiveType -> java.lang.Boolean::class.java
+        Byte::class.javaPrimitiveType -> java.lang.Byte::class.java
+        Char::class.javaPrimitiveType -> java.lang.Character::class.java
+        Short::class.javaPrimitiveType -> java.lang.Short::class.java
+        Int::class.javaPrimitiveType -> java.lang.Integer::class.java
+        Long::class.javaPrimitiveType -> java.lang.Long::class.java
+        Float::class.javaPrimitiveType -> java.lang.Float::class.java
+        Double::class.javaPrimitiveType -> java.lang.Double::class.java
         else -> type
     }
 
     private fun allMethods(clazz: Class<*>): Sequence<Method> = sequence {
         var current: Class<*>? = clazz
         while (current != null && current != Any::class.java) {
-            yieldAll(current.declaredMethods.asSequence())
+            current.declaredMethods.forEach { yield(it) }
             current = current.superclass
         }
     }
@@ -767,34 +940,23 @@ object EditMessageHook {
     private fun allFields(clazz: Class<*>): Sequence<Field> = sequence {
         var current: Class<*>? = clazz
         while (current != null && current != Any::class.java) {
-            yieldAll(current.declaredFields.asSequence())
+            current.declaredFields.forEach { yield(it) }
             current = current.superclass
         }
     }
 
     private fun identitySet(): MutableSet<Any> =
-        Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
+        Collections.newSetFromMap(IdentityHashMap())
 
     private fun stripSenderPrefix(content: String): String {
-        val end = senderPrefixEnd(content) ?: return content
-        val split = if (content.startsWith(":\r\n", end - 3)) end - 3 else end - 2
-        val prefix = content.substring(0, split)
-        return if (prefix.startsWith("wxid_") || prefix.matches(Regex("[a-zA-Z][\\w@.\\-]{4,80}"))) {
-            content.substring(end)
-        } else {
-            content
-        }
+        val index = senderPrefixEnd(content) ?: return content
+        return content.substring(index).trimStart()
     }
 
     private fun rawContentWithEditedBody(rawContent: String, body: String): String {
-        val end = senderPrefixEnd(rawContent) ?: return body
-        val split = if (rawContent.startsWith(":\r\n", end - 3)) end - 3 else end - 2
-        val prefix = rawContent.substring(0, split)
-        return if (prefix.startsWith("wxid_") || prefix.matches(Regex("[a-zA-Z][\\w@.\\-]{4,80}"))) {
-            rawContent.substring(0, end) + body
-        } else {
-            body
-        }
+        val index = senderPrefixEnd(rawContent) ?: return body
+        val prefix = rawContent.substring(0, index)
+        return prefix + body
     }
 
     private fun senderPrefixEnd(content: String): Int? {
@@ -803,15 +965,59 @@ object EditMessageHook {
         return listOfNotNull(rn, n).minOrNull()
     }
 
-    private fun editableText(view: View): TextView? {
-        if (view is TextView && isMessageTextCandidate(view)) return view
+    private fun getViewText(view: View): String {
+        if (view is TextView) return view.text?.toString().orEmpty()
+        return runCatching {
+            val aMethod = view.javaClass.getMethod("a")
+            aMethod.invoke(view)?.toString().orEmpty()
+        }.getOrElse {
+            runCatching {
+                val getText = view.javaClass.getMethod("getText")
+                getText.invoke(view)?.toString().orEmpty()
+            }.getOrDefault("")
+        }
+    }
+
+    private fun setViewText(view: View, text: String) {
+        applyingText = true
+        try {
+            if (view is TextView) {
+                runCatching { view.text = text }.onFailure { view.setText(text) }
+            } else {
+                val bMethod = runCatching {
+                    view.javaClass.getMethod("b", CharSequence::class.java)
+                }.getOrNull()
+                if (bMethod != null) {
+                    bMethod.invoke(view, text)
+                } else {
+                    val setText = runCatching {
+                        view.javaClass.getMethod("setText", CharSequence::class.java)
+                    }.getOrNull()
+                    setText?.invoke(view, text)
+                }
+            }
+            view.invalidate()
+            view.requestLayout()
+        } finally {
+            applyingText = false
+        }
+    }
+
+    private fun isNeatOrTextView(view: View): Boolean {
+        if (view is TextView) return true
+        val name = view.javaClass.name
+        return name.contains("NeatTextView") || name.contains("MMNeat7extView")
+    }
+
+    private fun editableText(view: View): View? {
+        if (isNeatOrTextView(view) && isMessageTextCandidate(view)) return view
         var current: View? = view
-        var best: TextView? = null
+        var best: View? = null
         var bestScore = Int.MIN_VALUE
         repeat(8) {
             val parent = current?.parent as? View ?: return@repeat
-            if (parent is android.view.ViewGroup) {
-                val candidates = ArrayList<TextView>()
+            if (parent is ViewGroup) {
+                val candidates = ArrayList<View>()
                 collectTextViews(parent, candidates)
                 candidates.forEach { candidate ->
                     if (!isMessageTextCandidate(candidate)) return@forEach
@@ -828,31 +1034,38 @@ object EditMessageHook {
         return best
     }
 
-    private fun collectTextViews(view: View, out: MutableList<TextView>) {
-        if (view is TextView) out += view
-        if (view is android.view.ViewGroup) {
+    private fun collectTextViews(view: View, out: MutableList<View>) {
+        if (isNeatOrTextView(view)) out += view
+        if (view is ViewGroup) {
             for (i in 0 until view.childCount) collectTextViews(view.getChildAt(i), out)
         }
     }
 
-    private fun isMessageTextCandidate(tv: TextView): Boolean {
-        if (tv.getTag(com.OKK.yes.core.R.id.abc_tag_custom_time) == true) return false
-        if (tv.visibility != View.VISIBLE || tv.alpha <= 0f) return false
-        val text = tv.text?.toString()?.trim().orEmpty()
+    private fun isMessageTextCandidate(v: View): Boolean {
+        if (v.getTag(com.OKK.yes.core.R.id.abc_tag_custom_time) == true) return false
+        if (v.visibility != View.VISIBLE || v.alpha <= 0f) return false
+        val text = getViewText(v).trim()
         if (text.isBlank() || text.length > 4000) return false
         if (text == MENU_TITLE || text.startsWith("\u270E")) return false
         if (looksLikeMetaText(text)) return false
         return true
     }
 
-    private fun messageTextScore(tv: TextView, origin: View): Int {
-        val text = tv.text?.toString()?.trim().orEmpty()
-        val sp = tv.textSize / tv.resources.displayMetrics.scaledDensity
+    private fun messageTextScore(v: View, origin: View): Int {
+        val text = getViewText(v).trim()
+        val sp = if (v is TextView) {
+            v.textSize / v.resources.displayMetrics.scaledDensity
+        } else {
+            runCatching {
+                val getTextSize = v.javaClass.getMethod("getTextSize")
+                (getTextSize.invoke(v) as Number).toFloat() / v.resources.displayMetrics.scaledDensity
+            }.getOrDefault(16f)
+        }
         var score = text.length.coerceAtMost(120)
-        if (tv === origin) score += 90
+        if (v === origin) score += 90
         if (sp >= 15f) score += 45 else score -= 35
         if (text.length <= 2 && sp < 16f) score -= 30
-        if (tv.width > 0 && tv.height > 0) score += ((tv.width * tv.height) / 1200).coerceAtMost(80)
+        if (v.width > 0 && v.height > 0) score += ((v.width * v.height) / 1200).coerceAtMost(80)
         if (text.any { it.isLetterOrDigit() || it.code in 0x4E00..0x9FFF }) score += 15
         return score
     }
@@ -860,9 +1073,9 @@ object EditMessageHook {
     private fun looksLikeMetaText(text: String): Boolean {
         val compact = text.trim()
         if (compact.matches(Regex("""\d{1,2}:\d{2}(:\d{2})?"""))) return true
-        if (compact.matches(Regex("""\d{1,2}月\d{1,2}日\s+\d{1,2}:\d{2}"""))) return true
-        if (compact.matches(Regex("""\d{1,2}[-/]\d{1,2}\s+周.\s+.*"""))) return true
-        if (compact.contains("分钟前") || compact.contains("小时前") || compact.contains("昨天") || compact.contains("前天")) {
+        if (compact.matches(Regex("""\d{1,2}\u6708\d{1,2}\u65e5\s+\d{1,2}:\d{2}"""))) return true
+        if (compact.matches(Regex("""\d{1,2}[-/]\d{1,2}\s+.*"""))) return true
+        if (compact.contains("\u5206\u949f\u524d") || compact.contains("\u5c0f\u65f6\u524d") || compact.contains("\u6628\u5929") || compact.contains("\u524d\u5929")) {
             if (compact.any { it.isDigit() } && compact.length <= 40) return true
         }
         if (compact.matches(Regex(""".*\b(KB|MB|GB)\b.*""", RegexOption.IGNORE_CASE))) return true
@@ -870,11 +1083,11 @@ object EditMessageHook {
         return false
     }
 
-    private fun isActive(target: TextView): Boolean =
+    private fun isActive(target: View): Boolean =
         activeTarget?.get() === target && System.currentTimeMillis() - activeAt < 8_000L
 
     private fun isActiveMessage(ref: MessageRef?): Boolean =
-        ref != null && activeMessage === ref && System.currentTimeMillis() - activeAt < 8_000L
+        ref != null && ref.msgId > 0L
 
     private fun inChatting(view: View): Boolean {
         var current: Any? = view
@@ -887,65 +1100,77 @@ object EditMessageHook {
         return false
     }
 
-    private fun showActiveEditDialog(tv: TextView) {
+    private fun showActiveEditDialog(target: View) {
         val ref = activeMessage
         if (isActiveMessage(ref)) {
-            showEditDialog(ref!!, tv)
+            showEditDialog(ref!!, target)
             return
         }
-        Toast.makeText(tv.context, "\u5f53\u524d\u6d88\u606f\u4e0d\u53ef\u4fee\u6539", Toast.LENGTH_SHORT).show()
+        Toast.makeText(target.context, "\u5f53\u524d\u6d88\u606f\u4e0d\u53ef\u4fee\u6539", Toast.LENGTH_SHORT).show()
         xlog("edit blocked: no active message ref")
     }
 
-    private fun showEditDialog(tv: TextView) {
+    private fun showEditDialog(target: View) {
         if (!isEnabled()) return
         if (dialogOpen) return
         menuShown = true
-        val ctx = tv.context ?: return
-        val originalText = resolveOriginalText(tv)
-        showStyledEditDialog(ctx, originalText, editedTexts[originalText] ?: originalText, isEdited = editedTexts.containsKey(originalText)) { newText, isReset ->
+        val ctx = target.context ?: return
+        val originalText = resolveOriginalText(target)
+        val currentText = editedTexts[originalText] ?: originalText
+        showStyledEditDialog(ctx, originalText, currentText, isEdited = editedTexts.containsKey(originalText)) { newText, isReset ->
             if (isReset) {
                 editedTexts.remove(originalText)
-                applyEditedText(tv, originalText)
-                Toast.makeText(ctx, "已还原原始消息", Toast.LENGTH_SHORT).show()
+                if (currentText.isNotBlank()) editedTexts.remove(currentText)
+                applyEditedText(target, originalText)
+                Toast.makeText(ctx, "\u5df2\u8fd8\u539f\u539f\u59cb\u6d88\u606f", Toast.LENGTH_SHORT).show()
             } else {
                 if (originalText.isNotBlank()) editedTexts[originalText] = newText
-                applyEditedText(tv, newText)
-                Toast.makeText(ctx, "已保存本地修改", Toast.LENGTH_SHORT).show()
+                applyEditedText(target, newText)
+                Toast.makeText(ctx, "\u5df2\u4fdd\u5b58\u672c\u5730\u4fee\u6539", Toast.LENGTH_SHORT).show()
             }
         }
     }
 
-    private fun showEditDialog(ref: MessageRef, tv: TextView) {
+    private fun showEditDialog(ref: MessageRef, target: View) {
         if (!isEnabled()) return
         if (dialogOpen) return
         menuShown = true
-        val ctx = tv.context ?: return
-        val originalText = ref.content
-        val currentText = editedByMsgId[ref.msgId] ?: originalText
+        val ctx = target.context ?: return
+        val originalText = originalByMsgId[ref.msgId] ?: ref.content
+        val currentText = editedByMsgId[ref.msgId] ?: ref.content
         val isEdited = editedByMsgId.containsKey(ref.msgId) || editedTexts.containsKey(originalText)
 
         showStyledEditDialog(ctx, originalText, currentText, isEdited) { newText, isReset ->
             if (isReset) {
+                val origText = originalByMsgId.remove(ref.msgId) ?: originalText
+                val origRaw = originalRawByMsgId.remove(ref.msgId) ?: ref.rawContent
                 editedByMsgId.remove(ref.msgId)
-                if (originalText.isNotBlank()) editedTexts.remove(originalText)
-                tv.setTag(com.OKK.yes.core.R.id.abc_tag_edit_msg_id, null)
-                val rawEdited = rawContentWithEditedBody(ref.rawContent, originalText)
-                ref.message.get()?.let { writeMessageContent(it, rawEdited) }
-                updateMessageContentInDb(ref.msgId, rawEdited)
-                applyEditedVisual(ref, tv, originalText, originalText)
-                tv.post { applyEditedVisual(ref, tv, originalText, originalText) }
-                Toast.makeText(ctx, "已还原原始消息", Toast.LENGTH_SHORT).show()
+                if (origText.isNotBlank()) editedTexts.remove(origText)
+                if (currentText.isNotBlank()) editedTexts.remove(currentText)
+                target.setTag(com.OKK.yes.core.R.id.abc_tag_edit_msg_id, -1L)
+                val rawRestored = rawContentWithEditedBody(origRaw, origText)
+                ref.message.get()?.let { writeMessageContent(it, rawRestored) }
+                updateMessageContentInDb(ref.msgId, rawRestored)
+                applyEditedVisual(ref, target, origText, origText)
+                target.post { applyEditedVisual(ref, target, origText, origText) }
+                Toast.makeText(ctx, "\u5df2\u8fd8\u539f\u539f\u59cb\u6d88\u606f", Toast.LENGTH_SHORT).show()
+                xlog("restore msgId=${ref.msgId} origText=${shortLog(origText)}")
             } else {
+                if (!originalByMsgId.containsKey(ref.msgId)) {
+                    originalByMsgId[ref.msgId] = originalText
+                    originalRawByMsgId[ref.msgId] = ref.rawContent
+                }
                 editedByMsgId[ref.msgId] = newText
-                if (originalText.isNotBlank()) editedTexts[originalText] = newText
-                tv.setTag(com.OKK.yes.core.R.id.abc_tag_edit_msg_id, ref.msgId)
-                val rawEdited = rawContentWithEditedBody(ref.rawContent, newText)
+                val origText = originalByMsgId[ref.msgId] ?: originalText
+                if (origText.isNotBlank()) editedTexts[origText] = newText
+                target.setTag(com.OKK.yes.core.R.id.abc_tag_edit_msg_id, ref.msgId)
+                val baseRaw = originalRawByMsgId[ref.msgId] ?: ref.rawContent
+                val rawEdited = rawContentWithEditedBody(baseRaw, newText)
                 val objectApplied = ref.message.get()?.let { writeMessageContent(it, rawEdited) } == true
                 val dbRows = updateMessageContentInDb(ref.msgId, rawEdited)
-                applyEditedVisual(ref, tv, originalText, newText)
-                tv.post { applyEditedVisual(ref, tv, originalText, newText) }
-                Toast.makeText(ctx, "已保存本地修改", Toast.LENGTH_SHORT).show()
+                applyEditedVisual(ref, target, origText, newText)
+                target.post { applyEditedVisual(ref, target, origText, newText) }
+                Toast.makeText(ctx, "\u5df2\u4fdd\u5b58\u672c\u5730\u4fee\u6539", Toast.LENGTH_SHORT).show()
                 xlog("edited msgId=${ref.msgId} objectApplied=$objectApplied dbRows=$dbRows")
             }
         }
@@ -978,7 +1203,7 @@ object EditMessageHook {
 
         // Title
         root.addView(TextView(ctx).apply {
-            text = "修改本地消息"
+            text = "\u4fee\u6539\u672c\u5730\u6d88\u606f"
             textSize = 17f
             setTextColor(primaryTxt)
             typeface = Typeface.DEFAULT_BOLD
@@ -986,7 +1211,7 @@ object EditMessageHook {
 
         // Subtitle / Tip
         root.addView(TextView(ctx).apply {
-            text = "修改仅在当前设备生效，重新载入消息列表时将自动刷新"
+            text = "\u4fee\u6539\u4ec5\u5728\u5f53\u524d\u8bbe\u5907\u751f\u6548\uff0c\u6ed1\u52a8\u6d88\u606f\u5217\u8868\u65f6\u4f1a\u81ea\u52a8\u5237\u65b0"
             textSize = 12.5f
             setTextColor(subTxt)
             setPadding(0, dp(ctx, 4), 0, 0)
@@ -1021,9 +1246,8 @@ object EditMessageHook {
         }
 
         if (isEdited) {
-            // Restore default button
             val restoreBtn = TextView(ctx).apply {
-                text = "还原"
+                text = "\u8fd8\u539f"
                 textSize = 13.5f
                 setTextColor(0xFFE64545.toInt())
                 gravity = Gravity.CENTER
@@ -1045,7 +1269,7 @@ object EditMessageHook {
 
         // Cancel button
         val cancelBtn = TextView(ctx).apply {
-            text = "取消"
+            text = "\u53d6\u6d88"
             textSize = 14f
             setTextColor(subTxt)
             gravity = Gravity.CENTER
@@ -1060,7 +1284,7 @@ object EditMessageHook {
 
         // Save button
         val saveBtn = TextView(ctx).apply {
-            text = "保存修改"
+            text = "\u4fdd\u5b58\u4fee\u6539"
             textSize = 14f
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
@@ -1096,34 +1320,27 @@ object EditMessageHook {
         }
     }
 
-    private fun resolveOriginalText(tv: TextView): String {
+    private fun resolveOriginalText(target: View): String {
         val active = activeOriginalText
-        val current = tv.text?.toString().orEmpty()
+        val current = getViewText(target)
         return if (!active.isNullOrBlank() && editedTexts[active] == current) active else current
     }
 
-    private fun applyEditedText(tv: TextView, text: String) {
-        applyingText = true
-        try {
-            runCatching { tv.text = text }.onFailure { tv.setText(text) }
-            tv.invalidate()
-            tv.requestLayout()
-        } finally {
-            applyingText = false
-        }
+    private fun applyEditedText(target: View, text: String) {
+        setViewText(target, text)
     }
 
-    private fun applyEditedVisual(ref: MessageRef, tv: TextView, originalText: String, newText: String): Int {
-        val targets = java.util.LinkedHashSet<TextView>()
-        targets += tv
+    private fun applyEditedVisual(ref: MessageRef, target: View, originalText: String, newText: String): Int {
+        val targets = java.util.LinkedHashSet<View>()
+        targets += target
         ref.target.get()?.let { targets += it }
         ref.view.get()?.let { row ->
-            val candidates = ArrayList<TextView>()
+            val candidates = ArrayList<View>()
             collectTextViews(row, candidates)
             candidates.forEach { candidate ->
-                val text = candidate.text?.toString().orEmpty()
-                if (candidate === tv || candidate === ref.target.get() || text == originalText || editedTexts[text] == newText) {
-                    if (isMessageTextCandidate(candidate) || candidate === tv || candidate === ref.target.get()) {
+                val text = getViewText(candidate)
+                if (candidate === target || candidate === ref.target.get() || text == originalText || editedTexts[text] == newText) {
+                    if (isMessageTextCandidate(candidate) || candidate === target || candidate === ref.target.get()) {
                         targets += candidate
                     }
                 }

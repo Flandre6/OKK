@@ -580,11 +580,24 @@ object ChatToolbarHook {
                 }.onFailure { xlog("launch AlbumPreviewUI fallback fail: ${it.message}") }
             }
             "拍摄" -> {
-                val act = context as? Activity
-                if (SystemCameraHook.isEnabled() && act != null) {
-                    SystemCameraHook.launchSystemCamera(act)
-                    return
+                // 1. 优先调用微信官方直调系统相机（u.c(0) / i4.z()）
+                // 拍完后微信原生会自动将照片保存至相册，并直接弹出发送确认发送进当前聊天
+                if (invokeDirectCamera(appPanel)) return
+
+                // 2. 备选：通过相册项（firstTool）的长按监听器触发（长按相册是微信官方系统相机的外部触发点）
+                if (firstTool?.onLongClickListener != null) {
+                    val grid = firstTool.gridView.get()
+                    val item = if (grid != null) resolveItemView(grid, firstTool) else null
+                    val handled = runCatching {
+                        firstTool.onLongClickListener.onItemLongClick(grid, item, 0, 0L)
+                    }.getOrDefault(false)
+                    if (handled) {
+                        xlog("invoked direct camera via firstTool.onLongClickListener")
+                        return
+                    }
                 }
+
+                // 3. 兜底：点击加号面板里的“拍摄”按钮（使用微信内置相机）
                 var captureTool = tools.firstOrNull { sameToolName(it.name, "拍摄") }
                 if (captureTool != null) {
                     var grid = captureTool.gridView.get()
@@ -597,15 +610,12 @@ object ChatToolbarHook {
                         val item = resolveItemView(grid, captureTool)
                         if (item != null) {
                             runCatching { captureTool.onClickListener.onItemClick(grid, item, captureTool.indexInGrid, 0L) }
+                            xlog("fallback to native capture tool click")
                             return
                         }
                     }
                 }
-                if (firstTool?.onLongClickListener != null) {
-                    firstTool.onLongClickListener.onItemLongClick(null, null, 0, 0L)
-                    return
-                }
-                if (act != null) SystemCameraHook.launchSystemCamera(act)
+                xlog("failed to launch camera: all attempts exhausted")
             }
             "语音通话" -> {
                 if (invokeDirectVoipCall(appPanel, isVideo = false)) return
@@ -655,6 +665,116 @@ object ChatToolbarHook {
             return runCatching { grid.adapter?.getView(tool.indexInGrid, null, grid) }.getOrNull()
         }
         return null
+    }
+
+    /**
+     * 微信官方直调系统相机（等效于相册长按触发）
+     * 流程：
+     * 1. 查找 AppPanel 中的 listener（com.tencent.mm.pluginsdk.ui.chat.u 实现类 t4）
+     * 2. 调用 listener.c(0) -> 触发微信官方权限检查与 i4.z()
+     * 3. 微信调起系统相机（requestCode = 201），拍完后由微信原生 SendImgComponent
+     *    自动保存全分辨率照片到系统相册（ExportFileUtil.b），并直接弹出发送确认发送进当前聊天！
+     */
+    private fun invokeDirectCamera(appPanel: ViewGroup): Boolean {
+        return runCatching {
+            // 策略 1：通过 AppPanel 中的 u 接口实例调用 c(0)
+            val uClass = runCatching {
+                XposedHelpers.findClass("com.tencent.mm.pluginsdk.ui.chat.u", appPanel.context.classLoader)
+            }.getOrNull()
+
+            var listener: Any? = if (uClass != null) findFieldValue(appPanel, uClass) else null
+
+            if (listener == null) {
+                var clazz: Class<*>? = appPanel.javaClass
+                while (clazz != null && clazz != Any::class.java) {
+                    for (f in clazz.declaredFields) {
+                        f.isAccessible = true
+                        val v = runCatching { f.get(appPanel) }.getOrNull() ?: continue
+                        val hasCInt = v.javaClass.methods.any {
+                            it.name == "c" && it.parameterTypes.size == 1 &&
+                                    (it.parameterTypes[0] == Int::class.javaPrimitiveType || it.parameterTypes[0] == java.lang.Integer::class.java)
+                        }
+                        if (hasCInt) {
+                            listener = v
+                            break
+                        }
+                    }
+                    if (listener != null) break
+                    clazz = clazz.superclass
+                }
+            }
+
+            if (listener != null) {
+                val cMethod = runCatching {
+                    listener.javaClass.getMethod("c", Int::class.javaPrimitiveType)
+                }.getOrNull() ?: runCatching {
+                    listener.javaClass.getDeclaredMethod("c", Int::class.javaPrimitiveType).apply { isAccessible = true }
+                }.getOrNull()
+
+                if (cMethod != null) {
+                    cMethod.invoke(listener, 0)
+                    xlog("invoked direct camera via listener.c(0) on ${listener.javaClass.name}")
+                    return true
+                }
+            }
+
+            // 策略 2：在 listener 或 appPanel 中寻找 i4 对象，直接调用 i4.z()
+            var i4Obj: Any? = null
+            if (listener != null) {
+                var clazz: Class<*>? = listener.javaClass
+                while (clazz != null && clazz != Any::class.java) {
+                    for (f in clazz.declaredFields) {
+                        f.isAccessible = true
+                        val v = runCatching { f.get(listener) }.getOrNull() ?: continue
+                        if (v.javaClass.name.contains("i4") || v.javaClass.name.contains("ChattingFooter")) {
+                            i4Obj = v
+                            break
+                        }
+                    }
+                    if (i4Obj != null) break
+                    clazz = clazz.superclass
+                }
+
+                if (i4Obj == null) {
+                    for (f in listener.javaClass.declaredFields) {
+                        f.isAccessible = true
+                        val v = runCatching { f.get(listener) }.getOrNull() ?: continue
+                        val hasZ = v.javaClass.declaredMethods.any { it.name == "z" && it.parameterTypes.isEmpty() }
+                        if (hasZ) {
+                            i4Obj = v
+                            break
+                        }
+                    }
+                }
+            }
+
+            if (i4Obj != null) {
+                val zMethod = runCatching {
+                    i4Obj.javaClass.getDeclaredMethod("z").apply { isAccessible = true }
+                }.getOrNull()
+                if (zMethod != null) {
+                    val result = zMethod.invoke(i4Obj) as? Boolean ?: true
+                    xlog("invoked direct camera via i4.z() on ${i4Obj.javaClass.name}, result=$result")
+                    if (result) return true
+                }
+            }
+
+            // 策略 3：调用 AppPanel 静态方法 h(appPanel, true)
+            val hMethod = appPanel.javaClass.declaredMethods.firstOrNull {
+                Modifier.isStatic(it.modifiers) &&
+                        it.parameterTypes.size == 2 &&
+                        it.parameterTypes[0] == appPanel.javaClass &&
+                        it.parameterTypes[1] == Boolean::class.javaPrimitiveType
+            }
+            if (hMethod != null) {
+                hMethod.isAccessible = true
+                hMethod.invoke(null, appPanel, true)
+                xlog("invoked direct camera via AppPanel.h(appPanel, true)")
+                return true
+            }
+
+            false
+        }.onFailure { xlog("invokeDirectCamera fail: ${it.message}") }.getOrDefault(false)
     }
 
     private fun invokeDirectVoipCall(appPanel: ViewGroup, isVideo: Boolean): Boolean {

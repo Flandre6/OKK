@@ -4,8 +4,15 @@ build/
 .kotlin/
 *.apk
 *.aab
-*.jar
 *.class
+*.jar
+# 例外：构建所必需的自带 jar（Gradle wrapper + compileOnly 的 Xposed/LSPosed API）。
+# 少了它们，全新 clone 会直接失败：
+#   - gradle-wrapper.jar 缺失 → ./gradlew 报 ClassNotFoundException: GradleWrapperMain
+#   - loader/libs/*.jar 缺失 → :monitor 编译失败（monitor/build.gradle.kts 用 files() 引用）
+!gradle/wrapper/gradle-wrapper.jar
+!bsh/gradle/wrapper/gradle-wrapper.jar
+!loader/libs/*.jar
 
 # 本地配置与签名密钥（敏感，勿入库）
 local.properties

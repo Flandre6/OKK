@@ -15,8 +15,8 @@ class WeChatVersionTest {
     }
 
     @Test
-    fun primaryRange_includes_69_to_76() {
-        for (p in 69..76) {
+    fun primaryRange_includes_69_to_79() {
+        for (p in 69..79) {
             val v = WeChatVersion("8.0.$p", 3000L + p, WeChatVersion.Channel.CN)
             assertTrue("8.0.$p should be primary", v.inPrimaryRange)
             assertEquals("主适配", v.supportLabel)
@@ -24,9 +24,32 @@ class WeChatVersionTest {
     }
 
     @Test
+    fun cn79_3200_is_cn() {
+        val v = WeChatVersion("8.0.79", 3200L, WeChatVersion.Channel.CN)
+        assertTrue(v.inPrimaryRange)
+        assertEquals("主适配", v.supportLabel)
+        assertEquals("CN", v.channel.name)
+    }
+
+    @Test
+    fun play77_is_primary_range() {
+        val v = WeChatVersion("8.0.77", 3141L, WeChatVersion.Channel.PLAY)
+        assertTrue(v.inPrimaryRange)
+        assertEquals("主适配", v.supportLabel)
+        assertEquals("PLAY", v.channel.name)
+    }
+
+    @Test
+    fun cn76_3141_is_cn() {
+        val v = WeChatVersion("8.0.76", 3141L, WeChatVersion.Channel.CN)
+        assertTrue(v.inPrimaryRange)
+        assertEquals("CN", v.channel.name)
+    }
+
+    @Test
     fun primaryRange_excludes_outside() {
         assertFalse(WeChatVersion("8.0.60", 1, WeChatVersion.Channel.CN).inPrimaryRange)
-        assertFalse(WeChatVersion("8.0.80", 1, WeChatVersion.Channel.CN).inPrimaryRange)
+        assertFalse(WeChatVersion("8.0.85", 1, WeChatVersion.Channel.CN).inPrimaryRange)
         assertFalse(WeChatVersion("7.0.22", 1, WeChatVersion.Channel.CN).inPrimaryRange)
     }
 

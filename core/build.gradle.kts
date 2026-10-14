@@ -53,3 +53,9 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
 }
+
+tasks.withType<Test> {
+    val kotlinTestClasses = layout.buildDirectory.dir("intermediates/built_in_kotlinc/debugUnitTest/compileDebugUnitTestKotlin/classes")
+    testClassesDirs += files(kotlinTestClasses)
+    classpath += files(kotlinTestClasses)
+}

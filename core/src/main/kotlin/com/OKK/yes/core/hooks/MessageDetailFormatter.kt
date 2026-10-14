@@ -15,9 +15,9 @@ data class MessageDetailOptions(
     val horizontalMarginDp: Int = 0,
     val leftMarginDp: Int = 0,
     val rightMarginDp: Int = 0,
-    val textColor: Int = 0xCCFFFFFF.toInt(),
-    val textColorLight: Int = 0xE6000000.toInt(),
-    val textColorDark: Int = 0xCCFFFFFF.toInt(),
+    val textColor: Int = 0xFF888888.toInt(),
+    val textColorLight: Int = 0xFF888888.toInt(),
+    val textColorDark: Int = 0xFF888888.toInt(),
     /** message_details_click_show：点击气泡才显示 */
     val clickToShow: Boolean = false
 ) {

@@ -241,19 +241,16 @@ class WkFloatingBarView(
                     isTracking = { isSwipingState.value },
                     onSelected = { onTabClick(it) },
                     onTabReselected = { index ->
-                        performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                         onTabReselect(index)
                     },
                     onTabReselectedLongPress = { index ->
                         if (index == 2) onDiscoverLongPress()
                     },
-                    backdrop = pagerView?.let { rememberViewBackdrop(it) } ?: rememberLayerBackdrop(),
                     tabsCount = navItems.size,
-                    isBlurEnabled = pagerView != null,
-                    blurRadius = 4.dp,
                     colors = FloatingBottomBarDefaults.colors(
                         containerColor = backgroundColor,
-                        indicatorColor = activeColor,
+                        indicatorColor = activeColor.copy(alpha = 0.18f),
                         contentColor = inactiveColor,
                         activeContentColor = activeColor,
                     ),
@@ -263,7 +260,7 @@ class WkFloatingBarView(
 
                         FloatingBottomBarItem(
                             onClick = {
-                                performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                                 onTabClick(index)
                             },
                             modifier = Modifier
@@ -282,7 +279,7 @@ class WkFloatingBarView(
                             BadgedBox(badge = { BadgeSlot(index) }) {
                                 Crossfade(
                                     targetState = isSelected,
-                                    animationSpec = tween(200),
+                                    animationSpec = tween(180),
                                     label = "navIconFloating",
                                 ) { selected ->
                                     Icon(

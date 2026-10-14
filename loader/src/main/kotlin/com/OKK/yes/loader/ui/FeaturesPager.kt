@@ -574,7 +574,6 @@ fun ScriptCategoryDetailScreen(onBack: () -> Unit) {
     var activeMenuPlugin by remember { mutableStateOf<JavaPlugin?>(null) }
     var renamingPlugin by remember { mutableStateOf<JavaPlugin?>(null) }
     var renameNewName by remember { mutableStateOf("") }
-    var showAgentDialog by remember { mutableStateOf(false) }
     var showUploadDialog by remember { mutableStateOf(false) }
     var isUploading by remember { mutableStateOf(false) }
 
@@ -827,44 +826,7 @@ fun ScriptCategoryDetailScreen(onBack: () -> Unit) {
                     }
                 }
 
-                // 功能入口 1: 插件 Agent (对齐 Hchat 架构)
-                item(key = "entry_agent_plugins") {
-                    Spacer(Modifier.height(10.dp))
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    showAgentDialog = true
-                                }
-                                .padding(horizontal = 16.dp, vertical = 14.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "插件 Agent",
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MiuixTheme.colorScheme.onSurface
-                                )
-                                Text(
-                                    text = "按需求生成或修改脚本插件",
-                                    fontSize = 12.sp,
-                                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                                    modifier = Modifier.padding(top = 2.dp)
-                                )
-                            }
-                            Icon(
-                                imageVector = MaterialSymbols.Outlined.Chevron_right,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp),
-                                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary
-                            )
-                        }
-                    }
-                }
-
-                // 功能入口 2: 在线插件
+                // 功能入口 1: 在线插件
                 item(key = "entry_online_plugins") {
                     Spacer(Modifier.height(10.dp))
                     Card(modifier = Modifier.fillMaxWidth()) {
@@ -2163,48 +2125,6 @@ fun ScriptCategoryDetailScreen(onBack: () -> Unit) {
                     onValueChange = { renameNewName = it },
                     label = "插件显示名称",
                     modifier = Modifier.fillMaxWidth()
-                )
-            }
-        }
-    }
-
-    // ══════════════════════════════════════════════════════════
-    // 插件 Agent 弹窗
-    // ══════════════════════════════════════════════════════════
-    if (showAgentDialog) {
-        ConfigDialog(
-            title = "插件 Agent",
-            onDismiss = { showAgentDialog = false },
-            bottomBar = {
-                Button(
-                    onClick = { showAgentDialog = false },
-                    modifier = Modifier.fillMaxWidth().height(40.dp)
-                ) {
-                    Text("知道了", fontSize = 13.sp)
-                }
-            }
-        ) {
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Text(
-                    text = "🤖 OKK 智能插件 Agent",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MiuixTheme.colorScheme.primary
-                )
-                Text(
-                    text = "OKK 支持在微信内使用纯标准 Java / BeanShell 编写强大的增强插件，并已完美兼容 HChat 全量插件生态。\n\n你可以使用 AI 编码助手（如 ChatGPT、Claude、DeepSeek）输入开发需求，Agent 将自动为你生成包含 info.prop 和 main.java 的即用插件包！",
-                    fontSize = 13.sp,
-                    color = MiuixTheme.colorScheme.onSurface,
-                    lineHeight = 18.sp
-                )
-                Text(
-                    text = "📚 插件存放目录：\n/sdcard/Android/media/com.tencent.mm/OKK/scripts/\n\n支持直接将 ZIP 包或脚本文件夹导入本地，或在【在线插件】中一键下载社区分享插件。",
-                    fontSize = 12.sp,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    lineHeight = 16.sp
                 )
             }
         }

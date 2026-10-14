@@ -311,8 +311,11 @@ object FeatureProbeCatalog {
             else OK("选点桥接")
         },
         p("DownloadRedirect", "下载重定向") { ctx ->
-            // 锚点基于 WeKit 逆向（cn76 已验证：AppMsgLogic 日志串 + vfs 特征串均命中）
+            // 锚点基于 ScopedStorageUtil 核心保存拦截；兼容旧版 initDownloadAttach / VFS 特征
             when {
+                ctx.classByStrings("ScopedStorageUtil") ||
+                    ctx.methodByStrings("ScopedStorageUtil") ->
+                    OK("ScopedStorageUtil 入口")
                 ctx.methodByStrings("summerbig initDownloadAttach msgLocalId[%d], msgXml[%s], downloadPath[%s]") &&
                     ctx.methodByStrings("summerbig initDownloadAttach ret[%b], rowid[%d], field_totalLen[%d], type[%d], isLargeFile[%d], destFile[%s], msgLocalId[%s], stack[%s]") ->
                     OK("init/insert DownloadAttach 特征")

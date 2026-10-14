@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.util.Log
+import com.OKK.yes.core.compat.DexKitSupport
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import java.io.File
@@ -43,7 +44,7 @@ object DownloadRedirectHook {
     fun install(context: Context, classLoader: ClassLoader, modulePath: String?) {
         if (!installed.compareAndSet(false, true)) return
         xlog("installing...")
-        locateAndHookScopedStorageUtil(classLoader)
+        locateAndHookScopedStorageUtil(context, classLoader, modulePath)
         locateAndHookToastMsg(classLoader)
         // install 自检：关键入口（ScopedStorageUtil）必须 hook 到，否则保存重定向不可能生效
         com.OKK.yes.core.startup.FeatureHookRegistry.reportEffective(
@@ -137,22 +138,83 @@ object DownloadRedirectHook {
         return null
     }
 
-    // ── 1. ScopedStorageUtil（u6.c）：微信 8.0.76 保存文件到公共目录的核心入口 ──
-    // u6.c(Context, src, dest, Uri, y6) -> boolean
-    private fun locateAndHookScopedStorageUtil(cl: ClassLoader) {
+    // ── 1. ScopedStorageUtil：微信保存文件到公共目录的核心入口 ──
+    // 8.0.76: u6.c(Context, src, dest, Uri, y6) -> boolean
+    // 8.0.77: v6.c(Context, src, dest, Uri, z6) -> boolean
+    private fun locateAndHookScopedStorageUtil(context: Context, cl: ClassLoader, modulePath: String?) {
         runCatching {
-            val clazz = Class.forName(com.OKK.yes.core.common.SecureStrings.d("hS8CwDZD3C5BwTVKxztAw3RH1ykC3jcCxzRJ0DRJx3RB3Dk="), false, cl)
+            var clazz: Class<*>? = null
+
+            // 1. 优先匹配多版本候选类名 (8.0.77 Play 为 v6，8.0.76 为 u6)
+            val candidateNames = listOf(
+                "com.tencent.mm.sdk.platformtools.v6",
+                "com.tencent.mm.sdk.platformtools.u6",
+                "com.tencent.mm.sdk.platformtools.w6",
+                "com.tencent.mm.sdk.platformtools.t6"
+            )
+            for (name in candidateNames) {
+                runCatching {
+                    val c = Class.forName(name, false, cl)
+                    val hasMethod = c.declaredMethods.any { cand ->
+                        cand.returnType == Boolean::class.javaPrimitiveType &&
+                            cand.parameterCount >= 4 &&
+                            cand.parameterTypes.getOrNull(0)?.name == "android.content.Context" &&
+                            cand.parameterTypes.getOrNull(1)?.name == "java.lang.String" &&
+                            cand.parameterTypes.getOrNull(2)?.name == "java.lang.String"
+                    }
+                    if (hasMethod) {
+                        clazz = c
+                    }
+                }
+                if (clazz != null) break
+            }
+
+            // 2. 候选类未命中时，通过 DexKit 按 ScopedStorageUtil 日志串动态搜索
+            if (clazz == null) {
+                clazz = DexKitSupport.findClassByStrings(
+                    context,
+                    cl,
+                    modulePath,
+                    "MicroMsg.ScopedStorageUtil"
+                )
+            }
+
+            // 3. 动态探测平台工具类 a6 ~ z6
+            if (clazz == null) {
+                for (ch in 'a'..'z') {
+                    val name = "com.tencent.mm.sdk.platformtools.${ch}6"
+                    val c = runCatching { Class.forName(name, false, cl) }.getOrNull() ?: continue
+                    val hasMethod = c.declaredMethods.any { cand ->
+                        cand.returnType == Boolean::class.javaPrimitiveType &&
+                            cand.parameterCount >= 4 &&
+                            cand.parameterTypes.getOrNull(0)?.name == "android.content.Context" &&
+                            cand.parameterTypes.getOrNull(1)?.name == "java.lang.String" &&
+                            cand.parameterTypes.getOrNull(2)?.name == "java.lang.String"
+                    }
+                    if (hasMethod) {
+                        clazz = c
+                        break
+                    }
+                }
+            }
+
+            if (clazz == null) {
+                xlog("ScopedStorageUtil class not found")
+                return
+            }
+
             val m = clazz.declaredMethods.firstOrNull { cand ->
                 cand.returnType == Boolean::class.javaPrimitiveType &&
-                    cand.parameterCount == 5 &&
+                    cand.parameterCount >= 4 &&
                     cand.parameterTypes.getOrNull(0)?.name == "android.content.Context" &&
                     cand.parameterTypes.getOrNull(1)?.name == "java.lang.String" &&
                     cand.parameterTypes.getOrNull(2)?.name == "java.lang.String"
             }
             if (m == null) {
-                xlog("ScopedStorageUtil.c not found")
+                xlog("ScopedStorageUtil save method not found on ${clazz.name}")
                 return
             }
+            m.isAccessible = true
             scopedStorageHooked.set(true)
 
             XposedBridge.hookMethod(m, object : XC_MethodHook() {
@@ -164,50 +226,61 @@ object DownloadRedirectHook {
                         val src = param.args.getOrNull(1) as? String ?: return
                         val dest = param.args.getOrNull(2) as? String ?: return
 
-                        val treeUriStr = saveTreeUri()
-                        if (treeUriStr.isBlank()) {
-                            xlog("No tree URI configured, falling back to original logic.")
-                            return
-                        }
-
-                        val treeUri = Uri.parse(treeUriStr)
-                        val fileName = File(dest).name
-                        xlog("Attempting SAF copy: $src -> $treeUri / $fileName")
-
                         val srcFile = File(src)
                         if (!srcFile.exists()) {
                             xlog("Source file does not exist: $src")
                             return
                         }
 
-                        val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
-                        val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
+                        val fileName = File(dest).name
+                        val treeUriStr = saveTreeUri()
+                        var copySuccess = false
 
-                        // 在该目录下创建新文件，系统会自动处理重名并加 (1) 后缀
-                        val newFileUri = DocumentsContract.createDocument(
-                            ctx.contentResolver, 
-                            docUri, 
-                            "*/*", 
-                            fileName
-                        )
-
-                        if (newFileUri == null) {
-                            xlog("Failed to create document in SAF directory")
-                            return
+                        // A. 若用户配置了有效 SAF tree URI，优先走 SAF DocumentsContract
+                        if (treeUriStr.isNotBlank() && treeUriStr.startsWith("content://")) {
+                            runCatching {
+                                val treeUri = Uri.parse(treeUriStr)
+                                val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
+                                val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
+                                val newFileUri = DocumentsContract.createDocument(
+                                    ctx.contentResolver, 
+                                    docUri, 
+                                    "*/*", 
+                                    fileName
+                                )
+                                if (newFileUri != null) {
+                                    ctx.contentResolver.openOutputStream(newFileUri)?.use { outStream ->
+                                        srcFile.inputStream().use { inStream ->
+                                            inStream.copyTo(outStream)
+                                        }
+                                    }
+                                    xlog("SAF copy successful! Saved to $newFileUri")
+                                    copySuccess = true
+                                }
+                            }.onFailure { xlog("SAF copy failed: ${it.message}") }
                         }
 
-                        ctx.contentResolver.openOutputStream(newFileUri)?.use { outStream ->
-                            srcFile.inputStream().use { inStream ->
-                                inStream.copyTo(outStream)
-                            }
+                        // B. 若未配置 SAF 或 SAF 写入未成功，直接文件复制到指定目录（私有媒体目录直接可写）
+                        if (!copySuccess) {
+                            val targetDir = File(saveDir())
+                            runCatching {
+                                if (!targetDir.exists()) {
+                                    targetDir.mkdirs()
+                                }
+                                val destFile = File(targetDir, fileName)
+                                srcFile.copyTo(destFile, overwrite = true)
+                                xlog("Direct copy successful! Saved to ${destFile.absolutePath}")
+                                copySuccess = true
+                            }.onFailure { xlog("Direct copy failed: ${it.message}") }
                         }
 
-                        xlog("SAF copy successful! Saved to $newFileUri")
-                        param.result = true // 拦截原方法，告知保存成功
-                    }.onFailure { xlog("SAF copy hook failed: ${it.stackTraceToString()}") }
+                        if (copySuccess) {
+                            param.result = true // 拦截原方法，告知微信保存成功
+                        }
+                    }.onFailure { xlog("copy hook failed: ${it.stackTraceToString()}") }
                 }
             })
-            xlog("hooked ScopedStorageUtil.c ${clazz.name}.${m.name}")
+            xlog("hooked ScopedStorageUtil method: ${clazz.name}.${m.name}")
         }.onFailure { xlog("locate ScopedStorageUtil fail: ${it.message}") }
     }
 

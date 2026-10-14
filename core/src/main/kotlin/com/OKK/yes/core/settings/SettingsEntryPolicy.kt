@@ -3,7 +3,7 @@ package com.OKK.yes.core.settings
 object SettingsEntryPolicy {
     const val entryKey = "abc_module_settings_entry"
     const val entryTitle = "OKK"
-    const val entrySubtitle = ""
+    const val entrySubtitle = "消息增强"
 
     const val modernMainSettingsClass = "com.tencent.mm.plugin.setting.ui.setting_new.MainSettingsUI"
     const val modernBaseSettingsClass = "com.tencent.mm.plugin.setting.ui.setting_new.base.BaseSettingPrefUI"

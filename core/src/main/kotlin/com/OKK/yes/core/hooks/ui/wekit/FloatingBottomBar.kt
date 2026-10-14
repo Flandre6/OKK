@@ -1,92 +1,51 @@
-// InstallerX-Revived
-// SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2025-2026 InstallerX Revived contributors
-//
-// The liquid-glass branch is adapted from Kyant0/AndroidLiquidGlass
-// (https://github.com/Kyant0/AndroidLiquidGlass) — Apache 2.0.
+// 微信主界面悬浮底栏（纯 Compose 三层解耦 + GPU 纯位移 + 果冻弹簧 + 0.97f 按压缩放反馈）
+
 package com.OKK.yes.core.hooks.ui.wekit
 
-import android.os.Build
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.EaseOut
+import android.view.HapticFeedbackConstants
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredWidth
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.dropShadow
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.util.fastCoerceIn
-import androidx.compose.ui.util.fastRoundToInt
-import androidx.compose.ui.util.lerp
-import com.OKK.yes.core.hooks.ui.wekit.animation.DampedDragAnimation
-import com.OKK.yes.core.hooks.ui.wekit.animation.InteractiveHighlight
-import com.OKK.yes.core.hooks.ui.wekit.liquid.InnerShadow
-import com.OKK.yes.core.hooks.ui.wekit.liquid.innerShadow
-import com.OKK.yes.core.hooks.ui.wekit.liquid.lens
-import com.OKK.yes.core.hooks.ui.wekit.liquid.rememberCombinedBackdrop
-import com.OKK.yes.core.hooks.ui.wekit.liquid.vibrancy
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.blur.Backdrop
-import top.yukonga.miuix.kmp.blur.blur
-import top.yukonga.miuix.kmp.blur.drawBackdrop
-import top.yukonga.miuix.kmp.blur.highlight.Highlight
-import top.yukonga.miuix.kmp.blur.layerBackdrop
-import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
-import kotlin.math.abs
-import kotlin.math.sign
-import androidx.compose.material3.LocalContentColor as M3LocalContentColor
-import androidx.compose.ui.graphics.shadow.Shadow as ComposeShadow
 
-val LocalFloatingBottomBarContentColor = staticCompositionLocalOf { Color.Unspecified }
-val LocalFloatingBottomBarTabScale = staticCompositionLocalOf { { 1f } }
-
-// State class holding all colors for the bottom bar
 @Immutable
 class FloatingBottomBarColors(
     val containerColor: Color,
@@ -95,14 +54,13 @@ class FloatingBottomBarColors(
     val activeContentColor: Color
 )
 
-// Defaults object for creating the Colors instance
 object FloatingBottomBarDefaults {
     @Composable
     fun colors(
-        containerColor: Color = MaterialTheme.colorScheme.surfaceContainer,
-        indicatorColor: Color = MaterialTheme.colorScheme.primary,
-        contentColor: Color = MaterialTheme.colorScheme.outline,
-        activeContentColor: Color = indicatorColor
+        containerColor: Color = if (isSystemInDarkTheme()) Color(0xE6141414) else Color(0xE6F7F7F7),
+        indicatorColor: Color = Color(0xFF07C160).copy(alpha = 0.18f),
+        contentColor: Color = if (isSystemInDarkTheme()) Color(0xFF999999) else Color(0xFF555555),
+        activeContentColor: Color = Color(0xFF07C160)
     ): FloatingBottomBarColors = FloatingBottomBarColors(
         containerColor = containerColor,
         indicatorColor = indicatorColor,
@@ -111,397 +69,189 @@ object FloatingBottomBarDefaults {
     )
 }
 
+private val PillShape = CircleShape
+private val PillHeight = 64.dp
+private val IndicatorHeight = 44.dp
+private const val SLIDER_WIDTH_RATIO = 0.82f
+
+/**
+ * 悬浮底栏子项包装容器：
+ * 提供 0.97f 按压瞬时缩放物理反馈（120ms tween），
+ * 搭配无边界水波或纯色微反馈，零侵入包裹任意图标与文字。
+ */
 @Composable
 fun RowScope.FloatingBottomBarItem(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val scale = LocalFloatingBottomBarTabScale.current
-    // Read the dynamic color provided by the surrounding layer.
-    val contentColor = LocalFloatingBottomBarContentColor.current
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
 
-    Column(
-        modifier
+    // 按压缩放物理反馈
+    val pressScale by animateFloatAsState(
+        targetValue = if (isPressed) 0.97f else 1.0f,
+        animationSpec = tween(durationMillis = 120),
+        label = "itemPressScale"
+    )
+
+    Box(
+        modifier = modifier
+            .weight(1f)
+            .fillMaxHeight()
             .clip(CircleShape)
             .clickable(
-                interactionSource = null,
+                interactionSource = interactionSource,
                 indication = null,
                 role = Role.Tab,
                 onClick = onClick
             )
-            .fillMaxHeight()
-            .weight(1f)
             .graphicsLayer {
-                val s = scale()
-                scaleX = s
-                scaleY = s
+                scaleX = pressScale
+                scaleY = pressScale
             },
-        verticalArrangement = Arrangement.spacedBy(1.dp, Alignment.CenterVertically),
-        horizontalAlignment = Alignment.CenterHorizontally
+        contentAlignment = Alignment.Center
     ) {
-        CompositionLocalProvider(M3LocalContentColor provides contentColor) {
-            content()
-        }
+        androidx.compose.foundation.layout.Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically),
+            content = content
+        )
     }
 }
 
+/**
+ * 微信主界面悬浮胶囊底栏核心容器（三层解耦 + GPU 变换 + 果冻弹簧）：
+ *
+ * 1. 胶囊主壳：外层 8dp 浮岛阴影 + 90% 磨砂底色 + 1dp 轮廓描边；
+ * 2. 滑块指示层（底层）：使用 graphicsLayer translationX 进行 GPU 变换，零重组零测量；
+ *    滑动状态跟随手势 1:1 响应，切换态切入 LowBouncy 弹簧回弹；
+ * 3. 内容层（顶层）：声明在滑块层之后，天然置顶于滑块之上，图标文字通透呈现。
+ */
 @Composable
 fun FloatingBottomBar(
     modifier: Modifier = Modifier,
     selectedIndex: () -> Int,
     onSelected: (index: Int) -> Unit,
-    backdrop: Backdrop,
     tabsCount: Int,
-    // Called when the already-selected tab is tapped. In blur mode the glass pill sits on
-    // top of the selected tab and swallows the tap before it reaches the tab item, so the
-    // item's own onClick never fires for a reselection; this forwards that tap instead.
-    // Defaults to routing through onSelected so callers that don't care keep old behaviour.
+    backdrop: Any? = null,
     onTabReselected: (index: Int) -> Unit = onSelected,
-    // Called when the already-selected tab is long-pressed. Same pill-occlusion problem as
-    // onTabReselected: the glass pill eats the long-press, so the tab item's own modifier
-    // never fires. Defaults to no-op so callers that don't need it are unaffected.
     onTabReselectedLongPress: (index: Int) -> Unit = {},
-    // Optional continuous position driver (e.g. a pager's fractional scroll offset,
-    // 0f..tabsCount-1). When null the indicator springs between whole tabs as before.
     progress: (() -> Float)? = null,
-    // Gate for the continuous driver. The indicator only tracks `progress` 1:1 while this
-    // returns true (e.g. an active finger swipe). When it returns false, a change in
-    // selectedIndex springs the indicator across with the press/glass animation — so a tab
-    // *tap* still bulges and slides rather than teleporting.
     isTracking: (() -> Boolean)? = null,
-    isBlurEnabled: Boolean = true,
-    // Radius of the glass blur, in dp. Higher = frostier / less legible content behind the bar.
-    blurRadius: Dp = 8.dp,
+    isBlurEnabled: Boolean = false,
+    blurRadius: Dp = 4.dp,
     colors: FloatingBottomBarColors = FloatingBottomBarDefaults.colors(),
     content: @Composable RowScope.() -> Unit
 ) {
-    val isInDark = isSystemInDarkTheme()
-    val pillShape = remember { CircleShape }
-    // A zero radius means "no glass at all": drop the blur, the frost tint and the lens refraction
-    // so the panel is fully transparent and WeChat's content shows through untouched.
-    val isGlassTransparent = isBlurEnabled && blurRadius <= 0.dp
-    // The glass layer is translucent so WeChat's content shows through it. At radius 0 the surface
-    // tint is removed entirely.
-    val containerColor = when {
-        isGlassTransparent -> Color.Transparent
-        else -> colors.containerColor
-    }
-
-    val tabsBackdrop = rememberLayerBackdrop()
     val density = LocalDensity.current
-    val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
-    val animationScope = rememberCoroutineScope()
+    val isInDark = isSystemInDarkTheme()
 
+    val tabPositions = remember {
+        mutableStateListOf<Float>().apply { repeat(tabsCount) { add(0f) } }
+    }
     var tabWidthPx by remember { mutableFloatStateOf(0f) }
-    var totalWidthPx by remember { mutableFloatStateOf(0f) }
 
-    val offsetAnimation = remember { Animatable(0f) }
-    val rubberBandPx = with(density) { 4.dp.toPx() }
-    val panelOffset by remember(rubberBandPx) {
-        derivedStateOf {
-            if (totalWidthPx == 0f) {
-                0f
-            } else {
-                val fraction = (offsetAnimation.value / totalWidthPx).fastCoerceIn(-1f, 1f)
-                rubberBandPx * fraction.sign * EaseOut.transform(abs(fraction))
-            }
-        }
-    }
+    val currentSelected = selectedIndex()
+    val isFingerTracking = isTracking?.invoke() ?: false
 
-    var currentIndex by remember(selectedIndex) { mutableIntStateOf(selectedIndex()) }
-
-    // Kept fresh so the pill's onTap (captured once in the remembered animation) always
-    // calls the latest callback.
-    val onTabReselectedState = rememberUpdatedState(onTabReselected)
-    val onTabReselectedLongPressState = rememberUpdatedState(onTabReselectedLongPress)
-
-    // Late-bound reference to the animation so canDrag can read its live value.
-    class DampedDragAnimationHolder {
-        var instance: DampedDragAnimation? = null
-    }
-
-    val holder = remember { DampedDragAnimationHolder() }
-
-    val dampedDragAnimation = remember(animationScope, tabsCount, density, isLtr) {
-        DampedDragAnimation(
-            animationScope = animationScope,
-            initialValue = selectedIndex().toFloat(),
-            valueRange = 0f..(tabsCount - 1).toFloat(),
-            visibilityThreshold = 0.001f,
-            initialScale = 1f,
-            pressedScale = 78f / 56f,
-            // Only start a drag when the touch lands within the tab strip bounds. Without this
-            // guard the pill swallows a tap on the already-selected tab as a zero-distance drag,
-            // so the tap never falls through to FloatingBottomBarItem.onClick (double-tap-home).
-            // 悬浮底栏已禁用左右划动切页：仅保留点击图标切换微信页面，划动不再切换
-            canDrag = { false },
-            onDragStarted = {},
-            onDragStopped = {
-                val targetIndex = targetValue.fastRoundToInt().fastCoerceIn(0, tabsCount - 1)
-                val previousIndex = currentIndex
-                animateToValue(targetIndex.toFloat())
-                if (targetIndex != previousIndex) {
-                    currentIndex = targetIndex
-                    onSelected(targetIndex)
-                }
-                animationScope.launch {
-                    offsetAnimation.animateTo(0f, spring(1f, 300f, 0.5f))
-                }
-            },
-            onDrag = { _, dragAmount ->
-                if (tabWidthPx > 0) {
-                    updateValue(
-                        (targetValue + dragAmount.x / tabWidthPx * if (isLtr) 1f else -1f)
-                            .fastCoerceIn(0f, (tabsCount - 1).toFloat())
-                    )
-                    animationScope.launch {
-                        offsetAnimation.snapTo(offsetAnimation.value + dragAmount.x)
-                    }
-                }
-            },
-            // The pill only ever rests over the selected tab, so a tap on it is a tap on the
-            // current tab. Report that tab's index to the (kept-fresh) reselect callback.
-            onTap = {
-                val index = value.fastRoundToInt().fastCoerceIn(0, tabsCount - 1)
-                onTabReselectedState.value(index)
-            },
-            onLongPress = {
-                val index = value.fastRoundToInt().fastCoerceIn(0, tabsCount - 1)
-                onTabReselectedLongPressState.value(index)
-            }
-        ).also { holder.instance = it }
-    }
-
-    LaunchedEffect(selectedIndex) {
-        snapshotFlow { selectedIndex() }.collectLatest { index ->
-            currentIndex = index
-            if (progress == null && isTracking?.invoke() != true) {
-                dampedDragAnimation.animateToValue(index.toFloat())
-            }
-        }
-    }
-
-    if (progress != null) {
-        LaunchedEffect(dampedDragAnimation) {
-            snapshotFlow { progress() }.collectLatest { value ->
-                if (!dampedDragAnimation.isDragging) {
-                    dampedDragAnimation.snapToValue(value)
-                }
-            }
-        }
-    }
-
-    // The interactive touch highlight uses an AGSL RuntimeShader, so it needs API 33+.
-    val interactiveHighlight =
-        if (isBlurEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            remember(animationScope, tabWidthPx) {
-                InteractiveHighlight(
-                    animationScope = animationScope,
-                    position = { size, _ ->
-                        Offset(
-                            if (isLtr) (dampedDragAnimation.value + 0.5f) * tabWidthPx + panelOffset
-                            else size.width - (dampedDragAnimation.value + 0.5f) * tabWidthPx + panelOffset,
-                            size.height / 2f
-                        )
-                    }
-                )
-            }
+    // 目标 X 坐标：若正在拖拽且有 progress 驱动，按连续浮点线性推导，否则取目标 Tab 位置
+    val targetIndicatorX = run {
+        if (progress != null && isFingerTracking) {
+            val p = progress().coerceIn(0f, (tabsCount - 1).toFloat())
+            val base = p.toInt()
+            val fraction = p - base
+            val start = tabPositions.getOrNull(base) ?: 0f
+            val end = tabPositions.getOrNull((base + 1).coerceAtMost(tabsCount - 1)) ?: start
+            start + (end - start) * fraction
         } else {
-            null
+            tabPositions.getOrNull(currentSelected) ?: 0f
         }
+    }
 
-    val combinedBackdrop = rememberCombinedBackdrop(backdrop, tabsBackdrop)
+    // 果冻弹簧动画：手指拖拽跟踪时加速贴合，点选释放时果冻惯性回弹
+    val animatedIndicatorX by animateFloatAsState(
+        targetValue = targetIndicatorX,
+        animationSpec = if (isFingerTracking) {
+            spring(
+                dampingRatio = Spring.DampingRatioNoBouncy,
+                stiffness = Spring.StiffnessHigh
+            )
+        } else {
+            spring(
+                dampingRatio = Spring.DampingRatioLowBouncy, // 0.35f 明显微过冲回弹
+                stiffness = Spring.StiffnessLow              // 200f 慢而柔和
+            )
+        },
+        label = "wekitIndicatorOffset"
+    )
+
+    val strokeColor = if (isInDark) Color(0x33FFFFFF) else Color(0x1F000000)
 
     Box(
-        modifier = modifier.width(IntrinsicSize.Min),
-        contentAlignment = Alignment.CenterStart
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp)
+            .height(PillHeight),
+        contentAlignment = Alignment.Center
     ) {
-        // 纯色底层背景板：彻底挡住下方滚动内容，防止文字和头像透显
-        Surface(
+        // ===== 胶囊主壳 =====
+        Box(
             modifier = Modifier
-                .matchParentSize()
-                .graphicsLayer { translationX = panelOffset },
-            shape = pillShape,
-            color = colors.containerColor,
-            shadowElevation = 6.dp
-        ) {}
-
-        // Base layer — unselected content.
-        CompositionLocalProvider(LocalFloatingBottomBarContentColor provides colors.contentColor) {
-            Row(
-                Modifier
-                    .onGloballyPositioned { coords ->
-                        totalWidthPx = coords.size.width.toFloat()
-                        val contentWidthPx = totalWidthPx - with(density) { 8.dp.toPx() }
-                        tabWidthPx = (contentWidthPx / tabsCount).coerceAtLeast(0f)
-                    }
-                    .graphicsLayer { translationX = panelOffset }
-                    .dropShadow(
-                        shape = pillShape,
-                        shadow = ComposeShadow(
-                            radius = 10.dp,
-                            color = Color.Black,
-                            alpha = if (isInDark) 0.2f else 0.1f,
-                        ),
-                    )
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = {}
-                    )
-                    .then(
-                        if (isBlurEnabled) {
-                            Modifier.drawBackdrop(
-                                backdrop = backdrop,
-                                shape = { pillShape },
-                                effects = {
-                                    if (!isGlassTransparent) {
-                                        vibrancy()
-                                        blur(blurRadius.toPx(), blurRadius.toPx())
-                                    }
-                                },
-                                highlight = { if (isGlassTransparent) null else Highlight.Default.copy(alpha = 0.4f) },
-                                layerBlock = {
-                                    val width = size.width.coerceAtLeast(1f)
-                                    val s = lerp(1f, 1f + 16.dp.toPx() / width, dampedDragAnimation.pressProgress)
-                                    scaleX = s
-                                    scaleY = s
-                                },
-                                onDrawSurface = { drawRect(containerColor) },
-                            )
-                        } else {
-                            Modifier.background(containerColor, pillShape)
+                .fillMaxWidth()
+                .height(PillHeight)
+                .shadow(
+                    elevation = 8.dp,
+                    shape = PillShape,
+                    clip = false
+                )
+                .clip(PillShape)
+                .background(colors.containerColor.copy(alpha = 0.90f))
+                .border(
+                    width = 1.dp,
+                    color = strokeColor,
+                    shape = PillShape
+                ),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            // ===== ① 滑块层（先声明，画在底层，GPU 纯位移）=====
+            if (tabWidthPx > 0f) {
+                val sliderWidthDp = with(density) { (tabWidthPx * SLIDER_WIDTH_RATIO).toDp() }
+                Box(
+                    modifier = Modifier
+                        .graphicsLayer {
+                            translationX = animatedIndicatorX
                         }
-                    )
-                    .then(interactiveHighlight?.modifier ?: Modifier)
-                    .height(64.dp)
-                    .padding(4.dp),
+                        .size(width = sliderWidthDp, height = IndicatorHeight)
+                        .clip(CircleShape)
+                        .background(colors.indicatorColor)
+                )
+            }
+
+            // ===== ② 内容层（后声明，画在顶层）=====
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight()
+                    .onGloballyPositioned { coords ->
+                        val totalW = coords.size.width.toFloat()
+                        val singleW = (totalW / tabsCount).coerceAtLeast(0f)
+                        if (tabWidthPx != singleW) {
+                            tabWidthPx = singleW
+                        }
+                        val indicatorW = singleW * SLIDER_WIDTH_RATIO
+                        val centerPadding = (singleW - indicatorW) / 2f
+                        for (i in 0 until tabsCount) {
+                            val startX = i * singleW + centerPadding
+                            if (i < tabPositions.size && tabPositions[i] != startX) {
+                                tabPositions[i] = startX
+                            }
+                        }
+                    },
+                horizontalArrangement = Arrangement.SpaceAround,
                 verticalAlignment = Alignment.CenterVertically,
                 content = content
             )
-        }
-
-        // Active overlay — captured into tabsBackdrop and revealed through the sliding pill.
-        if (isBlurEnabled) {
-            CompositionLocalProvider(
-                LocalFloatingBottomBarTabScale provides {
-                    lerp(1f, 1.2f, dampedDragAnimation.pressProgress)
-                },
-                LocalFloatingBottomBarContentColor provides colors.activeContentColor
-            ) {
-                Row(
-                    Modifier
-                        .clearAndSetSemantics {}
-                        .alpha(0f)
-                        .layerBackdrop(tabsBackdrop)
-                        .graphicsLayer { translationX = panelOffset }
-                        .drawBackdrop(
-                            backdrop = backdrop,
-                            shape = { pillShape },
-                            effects = {
-                                if (!isGlassTransparent) {
-                                    vibrancy()
-                                    blur(blurRadius.toPx(), blurRadius.toPx())
-                                    lens(
-                                        refractionHeight = 24.dp.toPx(),
-                                        refractionAmount = 24.dp.toPx(),
-                                    )
-                                }
-                            },
-                            onDrawSurface = { drawRect(containerColor) },
-                        )
-                        .then(interactiveHighlight?.modifier ?: Modifier)
-                        .height(56.dp)
-                        .padding(horizontal = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    content()
-                }
-            }
-        }
-
-        if (tabWidthPx > 0f) {
-            val tabWidthDp = with(density) { tabWidthPx.toDp() }
-            if (isBlurEnabled) {
-                Box(
-                    Modifier
-                        .padding(horizontal = 4.dp)
-                        .graphicsLayer {
-                            val progressOffset = dampedDragAnimation.value * tabWidthPx
-                            translationX = if (isLtr) progressOffset + panelOffset else -progressOffset + panelOffset
-                        }
-                        .then(interactiveHighlight?.gestureModifier ?: Modifier)
-                        .then(dampedDragAnimation.modifier)
-                        .drawBackdrop(
-                            backdrop = combinedBackdrop,
-                            shape = { pillShape },
-                            effects = {},
-                            highlight = {
-                                Highlight.Default.copy(alpha = dampedDragAnimation.pressProgress)
-                            },
-                            layerBlock = {
-                                scaleX = dampedDragAnimation.scaleX
-                                scaleY = dampedDragAnimation.scaleY
-                                val velocity = dampedDragAnimation.velocity / 10f
-                                scaleX /= 1f - (velocity * 0.75f).fastCoerceIn(-0.2f, 0.2f)
-                                scaleY *= 1f - (velocity * 0.25f).fastCoerceIn(-0.2f, 0.2f)
-                            },
-                            onDrawSurface = {
-                                val progress = dampedDragAnimation.pressProgress
-                                drawRect(
-                                    color = if (!isInDark) colors.indicatorColor.copy(alpha = 0.15f) else Color.White.copy(alpha = 0.12f),
-                                    alpha = 1f - progress,
-                                )
-                                drawRect(if (!isInDark) colors.indicatorColor.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.2f), alpha = 0.05f * progress)
-                            },
-                        )
-                        // miuix's drawBackdrop has no innerShadow param (kyant did); apply it as a
-                        // separate modifier, matching InstallerX's liquid-glass FloatingBottomBar.
-                        .innerShadow(shape = pillShape) {
-                            InnerShadow(
-                                radius = 8.dp * dampedDragAnimation.pressProgress,
-                                color = Color.Black.copy(alpha = 0.15f),
-                                alpha = dampedDragAnimation.pressProgress,
-                            )
-                        }
-                        .height(56.dp)
-                        .width(tabWidthDp)
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .padding(horizontal = 4.dp)
-                        .graphicsLayer {
-                            val progressOffset = dampedDragAnimation.value * tabWidthPx
-                            translationX = if (isLtr) progressOffset + panelOffset else -progressOffset + panelOffset
-                        }
-                        .then(dampedDragAnimation.modifier)
-                        .clip(pillShape)
-                        .background(colors.indicatorColor.copy(alpha = 0.15f), pillShape)
-                        .height(56.dp)
-                        .width(tabWidthDp),
-                    // Force start alignment for the Box container to prevent centering
-                    contentAlignment = Alignment.CenterStart
-                ) {
-                    // Provide the active content color to the non-blur active layer
-                    CompositionLocalProvider(LocalFloatingBottomBarContentColor provides colors.activeContentColor) {
-                        Row(
-                            Modifier
-                                .clearAndSetSemantics {}
-                                .wrapContentWidth(align = Alignment.Start, unbounded = true)
-                                .requiredWidth(with(density) { (totalWidthPx - 8.dp.toPx()).toDp() })
-                                .height(56.dp)
-                                .graphicsLayer {
-                                    val progressOffset = dampedDragAnimation.value * tabWidthPx
-                                    translationX = if (isLtr) -progressOffset else progressOffset
-                                },
-                            verticalAlignment = Alignment.CenterVertically,
-                            content = content
-                        )
-                    }
-                }
-            }
         }
     }
 }

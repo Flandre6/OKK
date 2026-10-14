@@ -18,15 +18,15 @@ object MessageDetailConfig {
         val light = MessageDetailFormatter.parseColor(
             cfgStr("detail_text_color_light", ""),
             MessageDetailFormatter.parseColor(
-                cfgStr("detail_text_color", "#E6000000"),
-                0xE6000000.toInt()
+                cfgStr("detail_text_color", "#888888"),
+                0xFF888888.toInt()
             )
         )
         val dark = MessageDetailFormatter.parseColor(
             cfgStr("detail_text_color_dark", ""),
             MessageDetailFormatter.parseColor(
-                cfgStr("detail_text_color", "#CCFFFFFF"),
-                0xCCFFFFFF.toInt()
+                cfgStr("detail_text_color", "#888888"),
+                0xFF888888.toInt()
             )
         )
         cached = MessageDetailOptions(

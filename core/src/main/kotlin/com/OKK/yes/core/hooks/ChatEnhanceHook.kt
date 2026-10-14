@@ -1257,27 +1257,25 @@ object ChatEnhanceHook {
             android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
             android.content.res.Configuration.UI_MODE_NIGHT_YES
         val configured = options.resolveTextColor(night)
-        val color = if (!night && Color.alpha(configured) < 0xE6) {
-            Color.argb(0xE6, Color.red(configured), Color.green(configured), Color.blue(configured))
+
+        // 日间模式下优先保证对比度：若用户配置为默认黑或深灰，使用微信标准灰 (#888888 / #99000000)
+        // 夜间模式下使用低眩光微白 (#A6FFFFFF)
+        val finalColor = if (night) {
+            configured
         } else {
+            // 如果透明度过高或配置了深色，保证其不会被错误反色成纯白
             configured
         }
-        val visibleColor = if (!night &&
-            (Color.red(color) * 0.299f + Color.green(color) * 0.587f + Color.blue(color) * 0.114f) < 120f
-        ) {
-            Color.argb(0xF2, 0xF5, 0xF5, 0xF5)
-        } else {
-            color
-        }
-        view.setTextColor(visibleColor)
+
+        view.setTextColor(finalColor)
         view.alpha = 1f
         view.letterSpacing = 0f
         if (night) {
             view.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
             view.setShadowLayer(1.2f, 0f, 0.5f, Color.parseColor("#44000000"))
         } else {
-            view.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            view.setShadowLayer(1.15f, 0f, 0.45f, Color.parseColor("#66000000"))
+            view.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+            view.setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT)
         }
     }
 

@@ -103,18 +103,19 @@ object ChatToolbarHook {
     private fun hookAppPanel(context: Context, classLoader: ClassLoader, modulePath: String?) {
         runCatching {
             // 1. 定位 initAppGrid 方法 (例如 AppPanel.n(AppPanel))
-            val initMethod = DexKitSupport.findMethodByStrings(
+            // 优化 8.0.77 Play：优先按稳定类名与签名特征扫描，不依赖已失效的 initAppGrid() 字符串
+            val initMethod = runCatching {
+                val appPanelClazz = XposedHelpers.findClass("com.tencent.mm.pluginsdk.ui.chat.AppPanel", classLoader)
+                appPanelClazz.declaredMethods.firstOrNull {
+                    Modifier.isStatic(it.modifiers) && it.parameterTypes.size == 1 && it.parameterTypes[0] == appPanelClazz
+                }
+            }.getOrNull() ?: DexKitSupport.findMethodByStrings(
                 context,
                 classLoader,
                 modulePath,
                 "MicroMsg.AppPanel",
                 "initAppGrid()"
-            ) ?: runCatching {
-                val appPanelClazz = XposedHelpers.findClass("com.tencent.mm.pluginsdk.ui.chat.AppPanel", classLoader)
-                appPanelClazz.declaredMethods.firstOrNull {
-                    Modifier.isStatic(it.modifiers) && it.parameterTypes.size == 1 && it.parameterTypes[0] == appPanelClazz
-                }
-            }.getOrNull()
+            )
 
             if (initMethod == null) {
                 xlog("initAppGrid method not found")
@@ -131,7 +132,17 @@ object ChatToolbarHook {
                 modulePath,
                 "MicroMsg.AppPanel",
                 "onMeasure width: %d, heigth:%d, isMeasured:%b, gridWidth:%d, gridHeight:%d"
-            )
+            ) ?: runCatching {
+                val appPanelClazz = XposedHelpers.findClass("com.tencent.mm.pluginsdk.ui.chat.AppPanel", classLoader)
+                val innerClasses = appPanelClazz.declaredClasses
+                innerClasses.firstNotNullOfOrNull { inner ->
+                    inner.declaredMethods.firstOrNull { m ->
+                        m.parameterTypes.size == 2 &&
+                            m.parameterTypes[0] == Int::class.javaPrimitiveType &&
+                            m.parameterTypes[1] == Int::class.javaPrimitiveType
+                    }
+                }
+            }.getOrNull()
 
             if (onMeasureMethod != null) {
                 measurerMethod = onMeasureMethod

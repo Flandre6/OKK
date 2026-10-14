@@ -564,8 +564,8 @@ fun MessageDetailConfigDialog(onDismiss: () -> Unit) {
             )
         )
         ConfigTextField(label = "字体大小", key = "detail_text_size", default = "12")
-        ConfigColorPicker12(label = "日间文字颜色", key = "detail_text_color_light", default = "#E6000000")
-        ConfigColorPicker12(label = "夜间文字颜色", key = "detail_text_color_dark", default = "#CCFFFFFF")
+        ConfigColorPicker12(label = "日间文字颜色", key = "detail_text_color_light", default = "#888888")
+        ConfigColorPicker12(label = "夜间文字颜色", key = "detail_text_color_dark", default = "#888888")
 
         ConfigButton(text = "保存格式设置") {
             MessageDetailConfig.invalidateCache()

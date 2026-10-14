@@ -29,6 +29,8 @@ object SecureStrings {
     private fun decode(encoded: String): String {
         val b = runCatching {
             Base64.decode(encoded, Base64.NO_WRAP)
+        }.getOrNull() ?: runCatching {
+            java.util.Base64.getDecoder().decode(encoded)
         }.getOrNull() ?: return encoded
         // 逆序
         var i = 0

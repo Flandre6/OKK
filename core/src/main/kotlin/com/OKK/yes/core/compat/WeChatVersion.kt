@@ -15,6 +15,8 @@ import de.robv.android.xposed.XposedBridge
  * - play72  8.0.72 / 3083
  * - cn74    8.0.74 / 3120
  * - cn76    8.0.76 / 3140
+ * - play77  8.0.77 / 3141
+ * - cn79    8.0.79 / 3200
  */
 data class WeChatVersion(
     val versionName: String,
@@ -35,7 +37,7 @@ data class WeChatVersion(
         patch = p.third
     }
 
-    /** 主适配区间：8.0.69 ～ 8.0.76（含国服 / Play） */
+    /** 主适配区间：8.0.69 ～ 8.0.79（含国服 / Play） */
     val inPrimaryRange: Boolean
         get() = major == 8 && minor == 0 && patch in MIN_PATCH..MAX_PATCH
 
@@ -52,8 +54,8 @@ data class WeChatVersion(
 
     companion object {
         const val MIN_PATCH = 69
-        const val MAX_PATCH = 76
-        const val PRIMARY_RANGE_LABEL = "微信 8.0.69–8.0.76（国服 / Play）"
+        const val MAX_PATCH = 79
+        const val PRIMARY_RANGE_LABEL = "微信 8.0.69–8.0.79（国服 / Play）"
 
         private const val TAG = "OKK-WxVer"
 
@@ -130,10 +132,17 @@ data class WeChatVersion(
                 return Channel.PLAY
             }
 
+            // 1.5) 针对同 versionCode 冲突的特殊联合判定：
+            // Google Play 8.0.77 的 versionCode 为 3141，与国服 8.0.76 分支 build (3141) 发生冲突。
+            // 当检测到 versionName 为 8.0.77 且 code 为 3141L 时，优先判定为 Google Play
+            if (name == "8.0.77" && code == 3141L) {
+                return Channel.PLAY
+            }
+
             // 2) 精确映射表：已知国服 / Play 的 versionCode（尾数不规律，必须精确匹配）
             when (code) {
                 // 国服
-                3060L, 3100L, 3120L, 3140L, 3141L -> return Channel.CN
+                3060L, 3100L, 3120L, 3140L, 3141L, 3200L -> return Channel.CN
                 // Google Play
                 3022L, 3083L, 3084L -> return Channel.PLAY
             }

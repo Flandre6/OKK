@@ -27,6 +27,7 @@ internal object MessageTimeLayoutPolicy {
 
     fun insertIndexBelowAnchor(childCount: Int, anchorIndex: Int, existingTimeIndex: Int): Int {
         if (anchorIndex < 0) return childCount
+        if (existingTimeIndex == anchorIndex + 1) return -1
         return if (existingTimeIndex in 0..anchorIndex) {
             anchorIndex
         } else {

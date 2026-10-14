@@ -1,13 +1,31 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
 }
 
-// 正式签名信息来自环境变量；是否就绪由根工程统一判定（:loader 的开发版自校验放行也依赖同一判定）。
-val hasReleaseSigning = rootProject.extra["okkReleaseSigningReady"] as Boolean
-val releaseStoreFilePath = System.getenv("OKK_STORE_FILE")
-val releaseStorePassword = System.getenv("OKK_STORE_PASSWORD")
-val releaseKeyAlias = System.getenv("OKK_KEY_ALIAS")
-val releaseKeyPassword = System.getenv("OKK_KEY_PASSWORD")
+// 正式签名凭据：优先读 local.properties，其次读环境变量；两者都没有则自动降级为 debug 签名。
+// 开源使用者可在 local.properties（已 gitignore）里配置：
+//   OKK_STORE_FILE=../release-okk.keystore
+//   OKK_STORE_PASSWORD=your-password
+//   OKK_KEY_ALIAS=your-alias
+//   OKK_KEY_PASSWORD=your-password
+// 什么都不配也能构建：release 产物自动用 debug 签名，真机可直接安装，不会产出装不上的 unsigned 包。
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+fun signingSecret(key: String): String? =
+    (localProps.getProperty(key) ?: System.getenv(key))?.takeIf { it.isNotBlank() }
+
+val releaseStoreFilePath = signingSecret("OKK_STORE_FILE")
+val releaseStorePassword = signingSecret("OKK_STORE_PASSWORD")
+val releaseKeyAlias = signingSecret("OKK_KEY_ALIAS")
+val releaseKeyPassword = signingSecret("OKK_KEY_PASSWORD")
+val hasReleaseSigning = releaseStoreFilePath != null &&
+    releaseStorePassword != null &&
+    releaseKeyAlias != null &&
+    releaseKeyPassword != null
 
 android {
     namespace = "com.OKK.yes"
@@ -24,7 +42,7 @@ android {
         }
     }
     signingConfigs {
-        // 正式签名不入库；发布者通过环境变量提供本地签名信息。
+        // 正式签名不入库；发布者通过 local.properties 或环境变量提供签名信息。
         create("releaseSign") {
             if (hasReleaseSigning) {
                 storeFile = rootProject.file(releaseStoreFilePath!!)
@@ -41,7 +59,7 @@ android {
             isShrinkResources = false
         }
         // 发版 / 打包：必须压缩 + 混淆 + 资源裁剪；
-        // 若未配置正式签名环境变量（如 Fork 用户或 Agent 自动化构建），自动降级使用 debug 签名，确保 APK 在真机上可直接安装调试，避免产出 unsigned APK 无法安装。
+        // 未配置正式签名凭据时自动降级为 debug 签名，保证任何人都能构建出可安装的包。
         release {
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.getByName("releaseSign")

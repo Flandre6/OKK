@@ -158,12 +158,6 @@ object HookInstaller {
             return
         }
 
-        // 反重签：非本机正式签名则不注入任何核心 Hook（模块静默失效）
-        if (!LegitCheck.isLegit(context.applicationContext ?: context, ModulePathHolder.modulePath)) {
-            xlog("LEGIT CHECK FAILED: module not signed by OKK release cert, abort injection")
-            return
-        }
-
         val appContext = context.applicationContext ?: context
         xlog("install core hooks via $reason")
         writeAlive(reason)

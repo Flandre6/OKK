@@ -108,8 +108,8 @@ OKK/
 
 ### 编译环境
 - **JDK**：17+
-- **Android SDK**：API 35+
-- **Gradle**：8.x
+- **Android SDK**：API 37（`platforms;android-37.0` + `build-tools;36.0.0`）
+- **Gradle**：9.6.1（自带 wrapper，无需手动安装）
 
 ### 执行编译
 ```powershell
@@ -119,6 +119,22 @@ OKK/
 # 或直接通过 Gradle 命令构建
 .\gradlew.bat :app:assembleRelease
 ```
+
+### 签名说明
+
+**不配置任何签名凭据也能直接构建**：release 产物会自动降级为 debug 签名，真机可直接安装，
+不会产出装不上的 `-unsigned` 包。运行时也没有任何签名自校验，clone 下来构建即可正常使用。
+
+若要发布正式签名包，在 `local.properties`（已 gitignore）中配置即可：
+
+```properties
+OKK_STORE_FILE=../release-okk.keystore
+OKK_STORE_PASSWORD=your-password
+OKK_KEY_ALIAS=your-alias
+OKK_KEY_PASSWORD=your-password
+```
+
+（同样支持同名环境变量，优先级低于 `local.properties`）
 
 <br>
 

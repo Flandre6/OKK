@@ -5,20 +5,13 @@ plugins {
 android {
     namespace = "com.OKK.yes.loader"
     compileSdk = 37
-    defaultConfig {
-        minSdk = 26
-        // 开发版标记：构建时未提供正式签名密钥（Fork / 本地 / Agent 构建）则为 true。
-        // 正式发版时由发布者提供 OKK_STORE_* 环境变量，该值为 false，LegitCheck 保持严格校验。
-        val releaseSigningReady = rootProject.extra["okkReleaseSigningReady"] as Boolean
-        buildConfigField("boolean", "OKK_DEV_BUILD", releaseSigningReady.not().toString())
-    }
+    defaultConfig { minSdk = 26 }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
     buildFeatures {
         compose = true
-        buildConfig = true
     }
 }
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {

@@ -42,10 +42,13 @@ android {
             isMinifyEnabled = false
             isShrinkResources = false
         }
-        // 发版 / 打包：必须压缩 + 混淆 + 资源裁剪；如未配置签名环境变量，则生成 unsigned release APK。
+        // 发版 / 打包：必须压缩 + 混淆 + 资源裁剪；
+        // 若未配置正式签名环境变量（如 Fork 用户或 Agent 自动化构建），自动降级使用 debug 签名，确保 APK 在真机上可直接安装调试，避免产出 unsigned APK 无法安装。
         release {
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.getByName("releaseSign")
+            } else {
+                signingConfig = signingConfigs.getByName("debug")
             }
             isMinifyEnabled = true
             isShrinkResources = true

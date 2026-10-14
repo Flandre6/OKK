@@ -2,14 +2,12 @@ plugins {
     id("com.android.application")
 }
 
-val releaseStoreFilePath = System.getenv("OKK_STORE_FILE")?.takeIf { it.isNotBlank() }
-val releaseStorePassword = System.getenv("OKK_STORE_PASSWORD")?.takeIf { it.isNotBlank() }
-val releaseKeyAlias = System.getenv("OKK_KEY_ALIAS")?.takeIf { it.isNotBlank() }
-val releaseKeyPassword = System.getenv("OKK_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
-val hasReleaseSigning = releaseStoreFilePath != null &&
-    releaseStorePassword != null &&
-    releaseKeyAlias != null &&
-    releaseKeyPassword != null
+// 正式签名信息来自环境变量；是否就绪由根工程统一判定（:loader 的开发版自校验放行也依赖同一判定）。
+val hasReleaseSigning = rootProject.extra["okkReleaseSigningReady"] as Boolean
+val releaseStoreFilePath = System.getenv("OKK_STORE_FILE")
+val releaseStorePassword = System.getenv("OKK_STORE_PASSWORD")
+val releaseKeyAlias = System.getenv("OKK_KEY_ALIAS")
+val releaseKeyPassword = System.getenv("OKK_KEY_PASSWORD")
 
 android {
     namespace = "com.OKK.yes"
@@ -18,8 +16,8 @@ android {
         applicationId = "com.OKK.yes"
         minSdk = 26
         targetSdk = 37
-        versionCode = 18
-        versionName = "1.2.6"
+        versionCode = 19
+        versionName = "1.2.7"
         // 真机主流 arm64；去掉 x86 模拟器 so 减小体积
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")

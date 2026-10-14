@@ -11,6 +11,9 @@ import java.io.File
  * 防止别人对 APK 重签名后“换个域名/作者名”倒卖伪装成正版。
  *
  * 策略（防脆弱性）：
+ *  - 开发版构建（构建时未提供正式签名密钥，BuildConfig.OKK_DEV_BUILD=true）→ 直接放行，
+ *    因为此类构建必然对不上正式证书指纹；放行但打日志，保证 Fork / 本地 / Agent 构建可用。
+ *  - 正式发版（提供了 OKK_STORE_* 环境变量）→ 走严格校验，重签包一律拦截。
  *  - 直接对模块 APK 文件做 PackageManager.getPackageArchiveInfo（不依赖包可见性，跨进程可靠）。
  *  - 读不到 / 无法解析（极端厂商环境）→ 默认放行，避免误伤正规用户，仅打日志。
  *  - 读到但哈希不匹配（被重签）→ 拒绝注入核心 Hook（模块静默失效，攻击者需先破解此校验）。
@@ -29,6 +32,13 @@ object LegitCheck {
 
     /** 是否为本机正式签名。moduleApkPath 来自 LSPosed 注入的模块 sourceDir。 */
     fun isLegit(context: Context, moduleApkPath: String?): Boolean {
+        // 开发版放行：无正式密钥的构建，签名必然不是正式证书，校验只会误伤。
+        // 重打包者若想绕过，必须自己改源码并重新编译（比“直接重签 APK”门槛高得多）。
+        if (BuildConfig.OKK_DEV_BUILD) {
+            xlog("DEV BUILD (no release keystore at build time) -> allow, skip signature check")
+            return true
+        }
+
         cachedResult?.let { return it }
 
         // 拿不到路径：无法判定，默认放行（避免误伤）

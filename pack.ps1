@@ -1,4 +1,4 @@
-# OKK 发版打包：固定 assembleRelease（R8 压缩混淆 + 资源裁剪）
+﻿# OKK 发版打包：固定 assembleRelease（R8 压缩混淆 + 资源裁剪）
 # 产物命名规范：OKK-{版本号}.apk（如 OKK-1.2.2.apk），同时生成 OKK-latest.apk
 # 用法:
 #   powershell -File pack.ps1
@@ -34,8 +34,19 @@ try {
     }
 
     $verName = "release"
-    $aapt = Get-ChildItem "D:\Tool\Android\Sdk\build-tools" -Recurse -Filter "aapt.exe" -ErrorAction SilentlyContinue |
-        Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+    # Auto-detect build-tools location (env vars first, then common install paths).
+    # NOTE: keep this comment ASCII-only. PowerShell 5.1 reads BOM-less .ps1 as ANSI/GBK,
+    # and a trailing multi-byte char can swallow the following newline, merging lines.
+    $sdkRoots = @($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT, "D:\Tool\Android", "D:\Tool\Android\Sdk") |
+        Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+    $aapt = $null
+    foreach ($sdkRoot in $sdkRoots) {
+        $btDir = Join-Path $sdkRoot "build-tools"
+        if (-not (Test-Path $btDir)) { continue }
+        $aapt = Get-ChildItem $btDir -Recurse -Filter "aapt.exe" -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+        if ($aapt) { break }
+    }
     if ($aapt) {
         try {
             # aapt 无法打开含中文的路径（OKK\源码 里的“源码”会转成乱码），先复制到 ASCII 临时路径再 badging

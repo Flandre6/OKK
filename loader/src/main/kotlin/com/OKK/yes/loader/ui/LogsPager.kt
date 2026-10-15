@@ -109,6 +109,11 @@ fun LogsPager() {
     val context = LocalContext.current
     val act = context as? Activity
     var refreshTick by remember { mutableIntStateOf(0) }
+    // 深度自检审计结果（手动触发，避免签名耗时操作在每帧重组时重跑）
+    var auditRows by remember {
+        mutableStateOf<List<com.OKK.yes.core.startup.RuntimeHealthAudit.AuditRow>>(emptyList())
+    }
+    var auditRan by remember { mutableStateOf(false) }
     var logEnabled by remember {
         mutableStateOf(runCatching { ModuleLog.isEnabled() }.getOrDefault(false))
     }
@@ -146,7 +151,7 @@ fun LogsPager() {
     val copyDiagnostic = {
         val full = buildString {
             appendLine("=== OKK 诊断报告 ===")
-            appendLine("Module: v1.2.6")
+            appendLine("Module: v1.3.0")
             appendLine("WeChat: $wxVer")
             appendLine("Report: ${compat?.summaryLine()}")
             appendLine("Hooks: $hookSum")
@@ -209,6 +214,81 @@ fun LogsPager() {
                     modifier = Modifier.weight(1f)
                 ) {
                     Text("复制诊断")
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(
+                    onClick = {
+                        ModuleLog.i("用户点击：深度自检")
+                        val rows = runCatching {
+                            com.OKK.yes.core.startup.RuntimeHealthAudit.audit()
+                        }.getOrDefault(emptyList())
+                        auditRows = rows
+                        auditRan = true
+                        runCatching { com.OKK.yes.core.startup.RuntimeHealthAudit.persist(rows) }
+                        Toast.makeText(
+                            context,
+                            com.OKK.yes.core.startup.RuntimeHealthAudit.summaryLine(rows),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("深度自检")
+                }
+                Button(
+                    onClick = {
+                        val rows = if (auditRows.isEmpty()) {
+                            runCatching { com.OKK.yes.core.startup.RuntimeHealthAudit.audit() }
+                                .getOrDefault(emptyList())
+                                .also { auditRows = it; auditRan = true }
+                        } else auditRows
+                        val text = com.OKK.yes.core.startup.RuntimeHealthAudit.reportText(rows)
+                        runCatching { com.OKK.yes.core.startup.RuntimeHealthAudit.persist(rows) }
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                        cm?.setPrimaryClip(ClipData.newPlainText("OKK-runtime-audit", text))
+                        Toast.makeText(context, "深度自检报告已复制", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("复制自检")
+                }
+            }
+        }
+
+        // ── 深度生效自检面板 ──
+        if (auditRan) {
+            item(key = "runtime_audit") {
+                Spacer(Modifier.height(6.dp))
+                SmallTitle(text = "深度生效自检")
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    BasicComponent(
+                        title = "汇总",
+                        summary = com.OKK.yes.core.startup.RuntimeHealthAudit.summaryLine(auditRows)
+                    )
+                    val issues = auditRows.filter {
+                        it.verdict == com.OKK.yes.core.startup.RuntimeHealthAudit.Verdict.BROKEN ||
+                            it.verdict == com.OKK.yes.core.startup.RuntimeHealthAudit.Verdict.DEGRADED
+                    }
+                    BasicComponent(
+                        title = "异常项",
+                        summary = if (issues.isEmpty()) "无" else issues.joinToString(", ") { it.title }
+                    )
+                    auditRows.forEach { row ->
+                        val mark = when (row.verdict) {
+                            com.OKK.yes.core.startup.RuntimeHealthAudit.Verdict.READY -> "✓"
+                            com.OKK.yes.core.startup.RuntimeHealthAudit.Verdict.UNVERIFIED -> "?"
+                            else -> "⚠"
+                        }
+                        BasicComponent(
+                            title = "$mark ${row.title} · ${row.verdict.name}",
+                            summary = "安装=${row.install} 生效=${row.effective} 运行=${row.runtime} 触发=${row.hits}次 · ${row.detail}"
+                        )
+                    }
                 }
             }
         }

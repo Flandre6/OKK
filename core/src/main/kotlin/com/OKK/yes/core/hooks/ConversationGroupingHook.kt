@@ -50,6 +50,9 @@ object ConversationGroupingHook {
     @Volatile private var storageClazz: Class<*>? = null
     @Volatile var storageRef: Any? = null
     @Volatile private var notifyMethod: Method? = null
+
+    /** 深度自检只读访问器：会话列表刷新方法是否已解析。 */
+    val isNotifyMethodResolved: Boolean get() = notifyMethod != null
     @Volatile private var updateUnreadByTalkerMethod: Method? = null
     private val storageSeen = java.util.Collections.synchronizedSet(mutableSetOf<Any>())
     private var lastGroupClickTime = 0L
@@ -197,6 +200,12 @@ object ConversationGroupingHook {
     // 日志限流：避免 SQL 重写日志刷屏（性能关键）
     @Volatile private var lastSqlLogTime = 0L
     private fun logSqlRewrite(kind: String, sql: String, rewritten: String) {
+        runCatching {
+            com.OKK.yes.core.startup.RuntimeHealthAudit.noteActivity(
+                "ConversationGrouping",
+                "会话列表查询已分组过滤"
+            )
+        }
         val now = SystemClock.uptimeMillis()
         if (now - lastSqlLogTime >= 2000L) {
             lastSqlLogTime = now

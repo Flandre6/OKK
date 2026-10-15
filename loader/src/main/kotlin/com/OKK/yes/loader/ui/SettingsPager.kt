@@ -46,7 +46,7 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
-private const val VERSION = "1.2.9-fix"
+private const val VERSION = "1.3.0"
 private const val KEY_NIGHT = "night_mode"
 private const val KEY_NIGHT_FOLLOW = "night_mode_follow"
 

@@ -337,14 +337,19 @@ object FeatureProbeCatalog {
             }
         },
         p("SwipeDeleteKeep", "左滑删除存记录") { ctx ->
-            // 锚点参考 WeKit WeConversationApi：ConversationStorage.delChatContact + doDeleteConv 工作方法
+            // 主锚点 = 「不显示该聊天」路径（仅移除会话行、保留聊天记录）
+            // WeKit WeConversationApi：ConversationStorage.k(String) aka delChatContact
+            val hasDelChatContact =
+                ctx.classByStrings("MicroMsg.ConversationStorage", "delChatContact username:") ||
+                    ctx.methodByStrings("MicroMsg.ConversationStorage", "delChatContact username:")
+            val hasStorageAnchor =
+                ctx.classByStrings("MicroMsg.ConversationAdapter.MvvmConversationAdapter") ||
+                    ctx.classByStrings("MicroMsg.ConversationWithCacheAdapter") ||
+                    ctx.classByStrings("MicroMsg.MainUI")
             when {
-                ctx.classByStrings("MicroMsg.ConversationStorage", "delChatContact username:") &&
-                    ctx.methodByStrings("MicroMsg.ConvDelLogic", "oplog modContact user:%s") ->
-                    OK("ConversationStorage.delChatContact + doDeleteConv")
-                ctx.classByStrings("MicroMsg.ConversationStorage", "delChatContact username:") ->
-                    PARTIAL("找到 delChatContact，缺 doDeleteConv")
-                else -> FAIL("无左滑删除锚点")
+                hasDelChatContact && hasStorageAnchor -> OK("delChatContact + 会话列表适配器")
+                hasDelChatContact -> PARTIAL("仅 delChatContact，缺会话列表锚点")
+                else -> FAIL("无 delChatContact 隐藏锚点")
             }
         },
         p("FinderVideoDownload", "视频号下载") { ctx ->

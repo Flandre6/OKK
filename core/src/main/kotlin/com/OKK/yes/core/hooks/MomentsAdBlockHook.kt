@@ -35,6 +35,16 @@ object MomentsAdBlockHook {
     private val blockedCount = AtomicInteger(0)
     private val hookedSqlMethods = ConcurrentHashMap.newKeySet<String>()
 
+    @Volatile private var adInfoHookCount = 0
+    @Volatile private var adXmlHookCount = 0
+    @Volatile private var isAdHookInstalled = false
+
+    /** 深度自检只读访问器。 */
+    val isFullyArmed: Boolean
+        get() = adInfoHookCount > 0 && adXmlHookCount > 0 && isAdHookInstalled
+    val armedDetail: String
+        get() = "ADInfo=$adInfoHookCount ADXml=$adXmlHookCount isAd=$isAdHookInstalled SQL=${hookedSqlMethods.size}"
+
     fun install(context: Context, classLoader: ClassLoader, modulePath: String? = null) {
         if (!installed.compareAndSet(false, true)) return
         xlog("install start, enabled=${isEnabled()}")
@@ -68,6 +78,12 @@ object MomentsAdBlockHook {
                             // 构造前置 null 阻止 feed(xml) 解析广告数据
                             param.result = null
                             val c = blockedCount.incrementAndGet()
+                            runCatching {
+                                com.OKK.yes.core.startup.RuntimeHealthAudit.noteActivity(
+                                    "MomentsAdBlock",
+                                    "已拦截广告对象"
+                                )
+                            }
                             if (c <= 5 || c % 50 == 0) {
                                 xlog("blocked ADInfo(String) ctor #$c")
                             }
@@ -76,6 +92,7 @@ object MomentsAdBlockHook {
                     count++
                 }
             }
+            adInfoHookCount = count
             xlog("hooked ADInfo ctors: $count")
         }.onFailure {
             xlog("hook ADInfo fail: ${it.message}")
@@ -100,6 +117,7 @@ object MomentsAdBlockHook {
                     count++
                 }
             }
+            adXmlHookCount = count
             xlog("hooked ADXml ctors: $count")
         }.onFailure {
             xlog("hook ADXml fail: ${it.message}")
@@ -143,6 +161,7 @@ object MomentsAdBlockHook {
                     }
                 })
                 xlog("hooked SnsInfo.isAd() -> false")
+                isAdHookInstalled = true
             }
         }.onFailure {
             xlog("hook SnsInfo.isAd fail: ${it.message}")
@@ -199,6 +218,12 @@ object MomentsAdBlockHook {
                     val rewritten = MomentsAdBlockLogic.rewriteSql(sql) ?: return
                     param.args[strIdx] = rewritten
                     val c = blockedCount.incrementAndGet()
+                    runCatching {
+                        com.OKK.yes.core.startup.RuntimeHealthAudit.noteActivity(
+                            "MomentsAdBlock",
+                            "已从本地数据库屏蔽广告行"
+                        )
+                    }
                     if (c <= 5 || c % 50 == 0) {
                         xlog("rewrote AdSnsInfo SQL #$c via $source ($key)")
                     }

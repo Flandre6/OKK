@@ -196,6 +196,12 @@ object FinderVideoDownloadHook {
                 }
             })
             xlog("hooked select menu ${m.declaringClass.name}.${m.name}")
+            runCatching {
+                com.OKK.yes.core.startup.RuntimeHealthAudit.noteActivity(
+                    "FinderVideoDownload",
+                    "视频号下载菜单已注入并可用"
+                )
+            }
             true
         }.onFailure { xlog("select menu hook fail: ${it.message}") }.getOrDefault(false)
     }

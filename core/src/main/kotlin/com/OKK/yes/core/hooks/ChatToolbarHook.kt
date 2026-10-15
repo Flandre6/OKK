@@ -63,6 +63,9 @@ object ChatToolbarHook {
     private val panelTools = Collections.synchronizedMap(WeakHashMap<ViewGroup, PanelTools>())
 
     @Volatile private var initAppGridMethod: Method? = null
+
+    /** 深度自检只读访问器：AppPanel.initAppGrid 是否已成功定位。 */
+    val isAppPanelResolved: Boolean get() = initAppGridMethod != null
     @Volatile private var measurerConstructor: Constructor<*>? = null
     @Volatile private var measurerMethod: Method? = null
 
@@ -523,6 +526,12 @@ object ChatToolbarHook {
 
         scrollView.addView(row)
         targetContainer.addView(scrollView, 0)
+        runCatching {
+            com.OKK.yes.core.startup.RuntimeHealthAudit.noteActivity(
+                "ChatToolbar",
+                "工具栏已注入（${activeItems.size} 项）"
+            )
+        }
     }
 
     private fun isNightMode(ctx: Context): Boolean {

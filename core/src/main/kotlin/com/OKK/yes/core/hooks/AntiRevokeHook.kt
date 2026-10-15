@@ -29,6 +29,9 @@ object AntiRevokeHook {
     private val dbHookInstalled = AtomicBoolean(false)
     private val storageScanAttempted = AtomicBoolean(false)
 
+    /** 深度自检只读访问器：撤回源头是否已成功拦截。 */
+    val isSourceHookInstalled: Boolean get() = sourceHookInstalled.get()
+
     /** msgId / msgSvrId → 原消息 */
     private val messageCache = ConcurrentHashMap<Long, OriginalMessage>()
     /** talker:msgSvrId → 原消息（） */
@@ -175,6 +178,12 @@ object AntiRevokeHook {
                 }
                 param.result = null
                 xlog("BLOCKED source revoke serverId=$serverId talker=$talker self=$self")
+                runCatching {
+                    com.OKK.yes.core.startup.RuntimeHealthAudit.noteActivity(
+                        "AntiRevoke",
+                        "已拦截撤回 serverId=$serverId"
+                    )
+                }
             }
         })
         xlog("hooked source revoke via $label")

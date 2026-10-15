@@ -210,6 +210,26 @@ object FeatureInstallGateway {
         }
         
         FeatureHookRegistry.persist()
+        // 注册主动干跑自检（只读反射状态，无副作用）
+        runCatching { com.OKK.yes.core.startup.FeatureVerifiers.registerAll() }
+            .onFailure { xlog("register verifiers fail: ${it.message}") }
+        // 启动时落盘一次深度审计（小文件写，放在后台线程，便于 adb 回收）
+        Thread {
+            runCatching {
+                val rows = com.OKK.yes.core.startup.RuntimeHealthAudit.audit()
+                com.OKK.yes.core.startup.RuntimeHealthAudit.persist(rows)
+                xlog("runtime audit ${com.OKK.yes.core.startup.RuntimeHealthAudit.summaryLine(rows)}")
+            }.onFailure { xlog("runtime audit fail: ${it.message}") }
+
+            // 启动后 20s 复检一次：部分锚点（如 ConversationStorage 实例）是惰性初始化的，
+            // 首次审计偏早，二次审计才能反映真实可达性。
+            runCatching {
+                Thread.sleep(20_000L)
+                val rows2 = com.OKK.yes.core.startup.RuntimeHealthAudit.audit()
+                com.OKK.yes.core.startup.RuntimeHealthAudit.persist(rows2)
+                xlog("runtime audit(2nd) ${com.OKK.yes.core.startup.RuntimeHealthAudit.summaryLine(rows2)}")
+            }.onFailure { xlog("runtime audit 2nd fail: ${it.message}") }
+        }.start()
         xlog("features done ${FeatureHookRegistry.summaryLine()}")
     }
 

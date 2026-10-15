@@ -26,6 +26,9 @@ object DownloadRedirectHook {
     /** ScopedStorageUtil 入口是否 hook 成功（install 自检关键点） */
     private val scopedStorageHooked = AtomicBoolean(false)
 
+    /** 深度自检只读访问器：保存入口是否已成功拦截。 */
+    val isSaveEntryHooked: Boolean get() = scopedStorageHooked.get()
+
     /** 用户新选中的目录（点“保存”才落盘），由设置弹窗写入、OKKSettingsDialog 的 onActivityResult hook 缓存 */
     @Volatile
     private var pendingTreeUriValue: String? = null
@@ -276,6 +279,12 @@ object DownloadRedirectHook {
 
                         if (copySuccess) {
                             param.result = true // 拦截原方法，告知微信保存成功
+                            runCatching {
+                                com.OKK.yes.core.startup.RuntimeHealthAudit.noteActivity(
+                                    "DownloadRedirect",
+                                    "已重定向保存 $fileName"
+                                )
+                            }
                         }
                     }.onFailure { xlog("copy hook failed: ${it.stackTraceToString()}") }
                 }

@@ -178,6 +178,12 @@ object AntiMomentsDeleteHook {
                     values.put("sourceType", AntiMomentsDeleteLogic.restoreSourceTypeOnDelete())
                     markContentDeleted(values, param.thisObject?.javaClass?.classLoader)
                     xlog("BLOCKED sns delete-update via $label")
+                    runCatching {
+                        com.OKK.yes.core.startup.RuntimeHealthAudit.noteActivity(
+                            "AntiMomentsDelete",
+                            "已拦截朋友圈删除"
+                        )
+                    }
                 }
             })
             xlog("hooked update via $label")

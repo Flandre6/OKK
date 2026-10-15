@@ -58,6 +58,17 @@ object FeatureHookRegistry {
     /** 运行时状态快照（逐功能）。 */
     fun runtimeSnapshot(): List<Record> = runtimeStates.values.sortedBy { it.name }
 
+    // ── 深度审计只读访问器（不改变任何写入时机与语义） ──
+
+    /** 取得指定功能的安装登记记录；null = 未登记。 */
+    fun recordOf(name: String): Record? = records[name]
+
+    /** 取得指定功能的生效上报（`reportEffective`）；null = 未上报。 */
+    fun effectiveOf(name: String): Pair<Boolean, String>? = effectiveReports[name]
+
+    /** 取得指定功能的运行时上报（`reportRuntime`）；null = 未上报。 */
+    fun runtimeOf(name: String): Record? = runtimeStates[name]
+
     /** 是否有运行时失效项（PARTIAL/FAIL）。 */
     fun hasRuntimeIssues(): Boolean = runtimeStates.values.any { it.status != Status.OK }
 

@@ -286,6 +286,12 @@ object InputStatsHook {
             if (!applyingHint.compareAndSet(false, true)) return
             try {
                 editText.hint = desired
+                runCatching {
+                    com.OKK.yes.core.startup.RuntimeHealthAudit.noteActivity(
+                        "InputStats",
+                        "输入框统计提示已生效"
+                    )
+                }
             } finally {
                 applyingHint.set(false)
             }

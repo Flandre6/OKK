@@ -60,8 +60,12 @@ object SwipeDeleteKeepHook {
     private var convStorageClazz: Class<*>? = null
     private var delChatContactMethod: Method? = null
     private var storageRef: Any? = null
-    private var doDeleteConvMethod: Method? = null
-    private var deleteMsgByTalkerMethod: Method? = null
+    private var adapterHookedCount: Int = 0
+
+    /** 供深度自检读取的关键解析结果（只读，不改变安装流程）。 */
+    val resolvedDelChatContactMethod: Method? get() = delChatContactMethod
+    val hasStorageRef: Boolean get() = storageRef != null
+    val resolvedAdapterHookCount: Int get() = adapterHookedCount
 
     private val hookedAdapters = LinkedHashSet<String>()
     private val classUsernameFieldMap = ConcurrentHashMap<Class<*>, Field>()
@@ -104,6 +108,7 @@ object SwipeDeleteKeepHook {
         Thread {
             resolveStorageAndWorker(ctx, cl, mp)
             hookConversationAdapters(ctx, cl, mp)
+            reportInstallEffective()
             xlog("install done enabled=true")
         }.start()
     }
@@ -129,26 +134,16 @@ object SwipeDeleteKeepHook {
             DexKitSupport.findClassByStrings(ctx, cl, mp, "MicroMsg.ConversationStorage", "doDeleteConversation username:")
         }.getOrNull()
 
+        // 注：doDeleteConversation / deleteMsgByTalker 均为「删除该聊天」的永久删除路径，
+        // 与本功能「仅列表移除、保留聊天记录」的契约相反，故不再解析也不调用。
         if (workerClazz != null) {
-            val methods = DexKitSupport.findMethodsByStrings(ctx, cl, mp, "MicroMsg.ConversationStorage", "doDeleteConversation username:")
-            doDeleteConvMethod = methods.firstOrNull { m ->
-                val pts = m.parameterTypes
-                pts.isNotEmpty() && pts[0] == String::class.java
-            } ?: methods.firstOrNull()
-        }
-
-        // 解析并定位 deleteMsgByTalker 方法（用于级联清理被删除会话的本地聊天记录）
-        runCatching {
-            val m = DexKitSupport.findMethodByStrings(ctx, cl, mp, "MicroMsg.MsgInfoStorageLogic", "summerdel deleteMsgByTalker[")
-            if (m != null) {
-                deleteMsgByTalkerMethod = m
-                xlog("resolved deleteMsgByTalker method: ${m.declaringClass.name}.${m.name}")
-            }
+            xlog("permanent-delete class present but intentionally unused: ${workerClazz.name}")
         }
 
         if (convStorageClazz != null) {
+            val clazz = convStorageClazz!!
             runCatching {
-                for (ctor in convStorageClazz!!.declaredConstructors) {
+                for (ctor in clazz.declaredConstructors) {
                     XposedBridge.hookMethod(ctor, object : XC_MethodHook() {
                         override fun afterHookedMethod(param: MethodHookParam) {
                             storageRef = param.thisObject
@@ -156,7 +151,107 @@ object SwipeDeleteKeepHook {
                     })
                 }
             }
+            // 构造函数可能早在 Hook 安装前就已执行（storageRef 会永久为空），
+            // 因此额外挂载所有实例方法，在首次调用时捕获 ConversationStorage 实例。
+            runCatching {
+                var n = 0
+                for (m in clazz.declaredMethods) {
+                    if (java.lang.reflect.Modifier.isStatic(m.modifiers)) continue
+                    if (m.parameterCount > 4) continue
+                    runCatching {
+                        m.isAccessible = true
+                        XposedBridge.hookMethod(m, object : XC_MethodHook() {
+                            override fun beforeHookedMethod(param: MethodHookParam) {
+                                if (storageRef == null) {
+                                    storageRef = param.thisObject
+                                    xlog("captured ConversationStorage via ${m.name}")
+                                }
+                            }
+                        })
+                        n++
+                    }
+                }
+                xlog("instance-method capture hooks installed: $n")
+            }
+            // 立即尝试一次主动解析（构造函数可能已过）
+            runCatching { resolveStorageRefNow(cl) }
         }
+    }
+
+    /**
+     * 安装自检：关键锚点是否真的解析到（避免「探针 OK 但实际无入口」）。
+     *
+     * 注意：`storageRef` 是惰性捕获的（构造函数实例方法首次调用时），
+     * 安装阶段为空属于正常，**不作为失败依据**，由深度自检在运行时复核。
+     */
+    private fun reportInstallEffective() {
+        val ok = delChatContactMethod != null && adapterHookedCount > 0
+        val detail = buildString {
+            append("delChatContact=")
+            append(if (delChatContactMethod != null) "✓" else "✗")
+            append(" storage=")
+            append(if (storageRef != null) "✓" else "待捕获")
+            append(" adapters=")
+            append(adapterHookedCount)
+            append(" · 保留聊天记录")
+        }
+        runCatching {
+            com.OKK.yes.core.startup.FeatureHookRegistry.reportEffective("SwipeDeleteKeep", ok, detail)
+        }
+    }
+
+    /**
+     * 主动解析 ConversationStorage 实例。
+     *
+     * 1:1 WeKit `WeServiceApi.storageFeatureService` 做法：
+     * 通过 MMKernel 的 coreStorage 静态访问器（特征串 `mCoreStorage not initialized!`）拿到 core storage，
+     * 再在字段 / 零参方法中找声明类型为 ConversationStorage 的成员。
+     *
+     * 用于构造函数 Hook 安装太晚（实例已创建）或实例方法尚未被调用的场景。
+     */
+    private fun resolveStorageRefNow(cl: ClassLoader): Any? {
+        storageRef?.let { return it }
+        val target = convStorageClazz ?: return null
+        val got = runCatching {
+            // 1. 定位 MMKernel coreStorage 访问器
+            val bridge = org.luckypray.dexkit.DexKitBridge.create(
+                com.OKK.yes.core.compat.DexKitSupport.modulePath ?: return@runCatching null
+            ) ?: return@runCatching null
+            val accessor = bridge.use { b ->
+                b.findMethod {
+                    matcher {
+                        usingStrings("mCoreStorage not initialized!")
+                        paramCount(0)
+                        modifiers(java.lang.reflect.Modifier.PUBLIC or java.lang.reflect.Modifier.STATIC)
+                    }
+                }.firstOrNull()?.getMethodInstance(cl)
+            } ?: return@runCatching null
+            accessor.isAccessible = true
+            val coreStorage = accessor.invoke(null) ?: return@runCatching null
+
+            // 2. 字段：声明类型或运行时类型匹配 ConversationStorage
+            for (f in coreStorage.javaClass.declaredFields) {
+                if (!target.isAssignableFrom(f.type) && f.type != target) continue
+                runCatching {
+                    f.isAccessible = true
+                    (f.get(coreStorage) as? Any)?.let { if (target.isInstance(it)) return@runCatching it }
+                }.getOrNull()?.let { return@runCatching it }
+            }
+            // 3. 零参方法：返回类型匹配 ConversationStorage
+            for (m in coreStorage.javaClass.declaredMethods) {
+                if (m.parameterCount != 0 || m.returnType != target) continue
+                runCatching {
+                    m.isAccessible = true
+                    m.invoke(coreStorage)
+                }.getOrNull()?.let { if (target.isInstance(it)) return@runCatching it }
+            }
+            null
+        }.getOrNull()
+        if (got != null) {
+            storageRef = got
+            xlog("resolved ConversationStorage via MMKernel")
+        }
+        return got
     }
 
     private fun hookConversationAdapters(ctx: Context, cl: ClassLoader, mp: String?) {
@@ -219,6 +314,7 @@ object SwipeDeleteKeepHook {
                     attachSwipeListener(view, state)
                 }
             })
+            adapterHookedCount++
             xlog("Successfully hooked getView: $source")
         }
     }
@@ -658,60 +754,63 @@ object SwipeDeleteKeepHook {
         }
     }
 
+    /**
+     * 左滑删除：**仅隐藏会话，保留聊天记录**。
+     *
+     * 严格按 [SwipeDeleteKeepPolicy] 选策略：
+     * 1. 首选 `ConversationStorage.delChatContact(String)`（微信原生「不显示该聊天」）；
+     * 2. 不可用时降级为 `DELETE FROM rconversation`；
+     * 3. 永远不调用 `deleteMsgByTalker` / `DELETE FROM message` / `doDeleteConversation`。
+     */
     private fun executeHideConversation(talker: String) {
         try {
+            // storageRef 为惰性捕获：若尚未拿到实例，先现场解析一次，避免静默失效
+            if (storageRef == null && convStorageClazz != null) {
+                val cl = runCatching { convStorageClazz!!.classLoader }.getOrNull()
+                if (cl != null) runCatching { resolveStorageRefNow(cl) }
+            }
+
+            val strategy = SwipeDeleteKeepPolicy.selectStrategy(
+                hasDelChatContact = delChatContactMethod != null,
+                hasStorageRef = storageRef != null
+            )
             var handled = false
-            if (doDeleteConvMethod != null && storageRef != null) {
-                val pts = doDeleteConvMethod!!.parameterTypes
-                if (pts.size == 1) {
-                    doDeleteConvMethod!!.invoke(storageRef, talker)
+
+            when (strategy) {
+                SwipeDeleteKeepPolicy.HideStrategy.DEL_CHAT_CONTACT -> {
+                    runCatching { delChatContactMethod!!.isAccessible = true }
+                    delChatContactMethod!!.invoke(storageRef, talker)
                     handled = true
-                } else if (pts.size >= 2 && pts[1] == Int::class.javaPrimitiveType) {
-                    doDeleteConvMethod!!.invoke(storageRef, talker, 0)
+                    xlog("hide via delChatContact talker=$talker")
+                }
+
+                SwipeDeleteKeepPolicy.HideStrategy.RAW_RCONVERSATION_DELETE -> {
+                    val (sql, _) = SwipeDeleteKeepPolicy.fallbackHideSql()
+                    ContactDisplayNames.execSql(sql, arrayOf(talker))
                     handled = true
+                    xlog("hide via fallback SQL talker=$talker")
+                }
+
+                SwipeDeleteKeepPolicy.HideStrategy.UNAVAILABLE -> {
+                    xlog("hide unavailable: storageRef/method not resolved talker=$talker")
                 }
             }
-            if (!handled && delChatContactMethod != null && storageRef != null) {
-                delChatContactMethod!!.invoke(storageRef, talker)
-                handled = true
+
+            // 防回退断言：保留聊天记录是功能契约，此处绝不允许触碰 message 表
+            if (SwipeDeleteKeepPolicy.shouldDeleteMessages) {
+                xlog("POLICY VIOLATION: shouldDeleteMessages must be false")
             }
 
-            // 级联清理本地聊天记录：微信原生删除群聊/联系人会话时会触发 deleteMsgByTalker。
-            // 解决折叠群聊/普通会话删除后聊天记录依然残留的问题。
-            runCatching {
-                val m = deleteMsgByTalkerMethod
-                if (m != null) {
-                    m.isAccessible = true
-                    val pts = m.parameterTypes
-                    when (pts.size) {
-                        2 -> {
-                            if (pts[0] == String::class.java) {
-                                m.invoke(null, talker, null)
-                            } else if (List::class.java.isAssignableFrom(pts[0])) {
-                                m.invoke(null, listOf(talker), null)
-                            }
-                        }
-                        3 -> {
-                            if (List::class.java.isAssignableFrom(pts[0])) {
-                                m.invoke(null, listOf(talker), null, 0L)
-                            } else if (pts[0] == String::class.java) {
-                                m.invoke(null, talker, null, 0L)
-                            }
-                        }
-                    }
-                    xlog("deleteMsgByTalker invoked for talker=$talker")
+            if (handled) {
+                runCatching {
+                    com.OKK.yes.core.startup.RuntimeHealthAudit.noteActivity(
+                        "SwipeDeleteKeep",
+                        "已隐藏会话并保留记录 talker=$talker"
+                    )
                 }
-            }.onFailure {
-                xlog("deleteMsgByTalker fail: ${it.message}")
             }
 
-            // 同步通过 WCDB 执行 SQL 兜底级联删除，双保险
-            runCatching {
-                ContactDisplayNames.execSql("DELETE FROM message WHERE talker = ?", arrayOf(talker))
-                ContactDisplayNames.execSql("DELETE FROM rconversation WHERE username = ?", arrayOf(talker))
-            }
-
-            xlog("executeHideConversation handled=$handled for talker=$talker")
+            xlog("executeHideConversation handled=$handled strategy=$strategy talker=$talker")
         } catch (t: Throwable) {
             xlog("executeHideConversation error: ${t.message}")
         }

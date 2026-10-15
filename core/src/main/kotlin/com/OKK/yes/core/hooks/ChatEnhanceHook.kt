@@ -960,7 +960,7 @@ object ChatEnhanceHook {
         }
     }
 
-    /** 竖向 LinearLayout：保证时间始终在锚点 child 之后（修复表情复用后跑到上方） */
+    /** 竖向 LinearLayout：保证时间始终在锚点 child 之后（修复卡片与表情复用后跑到上方） */
     private fun placeTimeBelowInLinear(
         parent: LinearLayout,
         anchorChild: View,
@@ -975,69 +975,39 @@ object ChatEnhanceHook {
             addOrUpdateTimeInParent(parent, text, msgId, isSend, options)
             return
         }
-        var oldView = findDirectTaggedTimeView(parent)
-        var oldIndex = if (oldView != null) parent.indexOfChild(oldView) else -1
-        val moveTo = MessageTimeLayoutPolicy.insertIndexBelowAnchor(
-            childCount = parent.childCount,
-            anchorIndex = anchorIndex,
-            existingTimeIndex = oldIndex
-        )
-        if (oldView != null && moveTo >= 0) {
-            parent.removeView(oldView)
-            // remove 后重新计算插入位置
-            val newAnchorIndex = parent.indexOfChild(anchorChild)
-            val insertAt = if (newAnchorIndex >= 0) {
-                min(parent.childCount, newAnchorIndex + 1)
-            } else {
-                parent.childCount
-            }
-            val params = (oldView.layoutParams as? LinearLayout.LayoutParams)
-                ?: LinearLayout.LayoutParams(
-                    MessageTimeLayoutPolicy.layoutWidth(),
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                )
-            params.width = MessageTimeLayoutPolicy.layoutWidth()
-            params.topMargin = dp(context, 4)
-            params.gravity = MessageTimeLayoutPolicy.gravity(isSend)
-            params.leftMargin = dp(context, options.marginStart(isSend))
-            params.rightMargin = dp(context, options.marginEnd(isSend))
-            oldView.text = text
-            oldView.setTag(R.id.abc_tag_custom_time_msg_id, msgId)
-            oldView.gravity = MessageTimeLayoutPolicy.gravity(isSend)
-            oldView.textSize = options.textSizeSp
-            applyDetailStyle(oldView, options)
-            applyClickShowVisibility(oldView, options)
-            parent.addView(oldView, insertAt, params)
-            return
-        }
+
+        // 强一致性防御：若存在旧时间 View，先从当前 parent 移除，再重新按锚点计算插入位置
+        val oldView = findDirectTaggedTimeView(parent)
         if (oldView != null) {
-            oldView.text = text
-            oldView.setTag(R.id.abc_tag_custom_time_msg_id, msgId)
-            oldView.gravity = MessageTimeLayoutPolicy.gravity(isSend)
-            oldView.textSize = options.textSizeSp
-            applyDetailStyle(oldView, options)
-            applyClickShowVisibility(oldView, options)
-            (oldView.layoutParams as? LinearLayout.LayoutParams)?.apply {
-                width = MessageTimeLayoutPolicy.layoutWidth()
-                gravity = MessageTimeLayoutPolicy.gravity(isSend)
-                leftMargin = dp(context, options.marginStart(isSend))
-                rightMargin = dp(context, options.marginEnd(isSend))
-            }
-            return
+            parent.removeView(oldView)
         }
 
-        val timeView = createTimeView(context, text, msgId, options)
-        val params = LinearLayout.LayoutParams(
-            MessageTimeLayoutPolicy.layoutWidth(),
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply {
-            topMargin = dp(context, 4)
-            gravity = MessageTimeLayoutPolicy.gravity(isSend)
-            leftMargin = dp(context, options.marginStart(isSend))
-            rightMargin = dp(context, options.marginEnd(isSend))
+        val newAnchorIndex = parent.indexOfChild(anchorChild)
+        val insertAt = if (newAnchorIndex >= 0) {
+            min(parent.childCount, newAnchorIndex + 1)
+        } else {
+            parent.childCount
         }
-        val insertIndex = min(parent.childCount, anchorIndex + 1)
-        parent.addView(timeView, insertIndex, params)
+
+        val targetView = oldView ?: createTimeView(context, text, msgId, options)
+        val params = (targetView.layoutParams as? LinearLayout.LayoutParams)
+            ?: LinearLayout.LayoutParams(
+                MessageTimeLayoutPolicy.layoutWidth(),
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        params.width = MessageTimeLayoutPolicy.layoutWidth()
+        params.topMargin = dp(context, 4)
+        params.gravity = MessageTimeLayoutPolicy.gravity(isSend)
+        params.leftMargin = dp(context, options.marginStart(isSend))
+        params.rightMargin = dp(context, options.marginEnd(isSend))
+
+        targetView.text = text
+        targetView.setTag(R.id.abc_tag_custom_time_msg_id, msgId)
+        targetView.gravity = MessageTimeLayoutPolicy.gravity(isSend)
+        targetView.textSize = options.textSizeSp
+        applyDetailStyle(targetView, options)
+        applyClickShowVisibility(targetView, options)
+        parent.addView(targetView, insertAt, params)
     }
 
     private fun addOrUpdateTimeInParent(
@@ -1997,12 +1967,23 @@ object ChatEnhanceHook {
         options: MessageDetailOptions
     ) {
         if (itemView !is ViewGroup) return
-        if (BubbleDrawablePolicy.isAppMessageType(messageType) &&
-            addTimeUsingHolderContentAnchor(holder, itemView, text, msgId, isSend, options)
-        ) {
-            return
+
+        // 1. 对于应用消息/文件消息/链接卡片等（49类消息）：优先精准查找卡片锚点
+        if (BubbleDrawablePolicy.isAppMessageType(messageType)) {
+            val appMsgAnchor = findAppMsgContentAnchor(holder, itemView)
+            if (appMsgAnchor != null) {
+                val parent = appMsgAnchor.parent as? ViewGroup
+                if (parent is LinearLayout && MessageTimeLayoutPolicy.canHostTime(parent.orientation)) {
+                    placeTimeBelowInLinear(parent, appMsgAnchor, text, msgId, isSend, options)
+                    return
+                } else if (parent is android.widget.RelativeLayout) {
+                    addOrUpdateTimeBelowInRelativeLayout(parent, appMsgAnchor, text, msgId, isSend, options)
+                    return
+                }
+            }
         }
-        // 优先表情节点（避免走错内容子 View 导致时间在上方）
+
+        // 2. 优先表情节点（避免走错内容子 View 导致时间在上方）
         findEmojiView(itemView, itemView.context.classLoader)?.let { emoji ->
             addOrUpdateCustomTimeBelowMedia(emoji, text, msgId, isSend, options)
             return
@@ -2011,10 +1992,12 @@ object ChatEnhanceHook {
             addOrUpdateCustomTimeBelowMedia(media, text, msgId, isSend, options)
             return
         }
+
+        // 3. 通用非气泡行：从底部向上寻找第一个拥有至少两个子项的容器
         var innerLayout: ViewGroup? = null
         for (i in itemView.childCount - 1 downTo 0) {
             val child = itemView.getChildAt(i)
-            if (child is ViewGroup && child.childCount >= 2) {
+            if (child is ViewGroup && child.childCount >= 1) {
                 innerLayout = child
                 break
             }
@@ -2023,7 +2006,7 @@ object ChatEnhanceHook {
         if (innerLayout is LinearLayout && innerLayout.orientation == LinearLayout.VERTICAL) {
             val contentView = findContentChild(innerLayout, itemView)
             if (contentView != null) {
-                addOrUpdateCustomTimeBelowMedia(contentView, text, msgId, isSend, options)
+                placeTimeBelowInLinear(innerLayout, contentView, text, msgId, isSend, options)
             } else {
                 addOrUpdateTimeInParent(innerLayout, text, msgId, isSend, options)
             }
@@ -2034,7 +2017,7 @@ object ChatEnhanceHook {
             if (child is LinearLayout && child.orientation == LinearLayout.VERTICAL) {
                 val contentView = findContentChild(child, itemView)
                 if (contentView != null) {
-                    addOrUpdateCustomTimeBelowMedia(contentView, text, msgId, isSend, options)
+                    placeTimeBelowInLinear(child, contentView, text, msgId, isSend, options)
                 } else {
                     addOrUpdateTimeInParent(child, text, msgId, isSend, options)
                 }
@@ -2087,6 +2070,58 @@ object ChatEnhanceHook {
                 max(it.width, it.layoutParams?.width ?: 0).toLong() *
                     max(it.height, it.layoutParams?.height ?: 0).toLong()
             }
+    }
+
+    /**
+     * 针对微信应用消息（文件/链接/卡片）：
+     * 优先通过 holder.clickArea、holder.chattingItem 等核心点击/卡片区域，
+     * 或沿 itemView 树向下定位包含文件名、大小或图标的真实卡片容器。
+     */
+    private fun findAppMsgContentAnchor(holder: Any, itemView: View): View? {
+        // 1. 优先从 holder 寻找命名明确的卡片区域 field
+        val preferredFieldNames = listOf("clickarea", "chattingitem", "contentlayout", "cardview", "contentview")
+        for (preferred in preferredFieldNames) {
+            val field = holder.javaClass.allFields().firstOrNull {
+                View::class.java.isAssignableFrom(it.type) && it.name.lowercase().contains(preferred)
+            }
+            if (field != null) {
+                val v = runCatching {
+                    field.isAccessible = true
+                    field.get(holder) as? View
+                }.getOrNull()
+                if (v != null && v.isShown && isDescendantOf(v, itemView)) {
+                    val p = v.parent
+                    if (p is LinearLayout || p is android.widget.RelativeLayout) {
+                        return v
+                    }
+                }
+            }
+        }
+
+        // 2. 通过通用 holder 候选查找
+        val fallback = findHolderContentAnchor(holder, itemView)
+        if (fallback != null) return fallback
+
+        // 3. 在 itemView 中寻找卡片主容器：寻找包含背景、且不是根容器的深层 ViewGroup
+        val candidates = ArrayList<View>()
+        fun scan(v: View, depth: Int) {
+            if (depth > 6 || !v.isShown || v.getTag(R.id.abc_tag_custom_time) == true) return
+            if (v !== itemView && v is ViewGroup && v.childCount >= 1) {
+                val p = v.parent
+                if (p is LinearLayout && MessageTimeLayoutPolicy.canHostTime(p.orientation)) {
+                    candidates += v
+                } else if (p is android.widget.RelativeLayout) {
+                    candidates += v
+                }
+            }
+            if (v is ViewGroup) {
+                for (i in 0 until v.childCount) {
+                    scan(v.getChildAt(i), depth + 1)
+                }
+            }
+        }
+        scan(itemView, 0)
+        return candidates.maxByOrNull { holderViewArea(it) }
     }
 
     private fun addTimeUsingHolderContentAnchor(

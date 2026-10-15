@@ -28,6 +28,12 @@ object InputStatsHook {
     private val trackedInputs: MutableSet<View> = Collections.newSetFromMap(WeakHashMap())
 
     @Volatile
+    private var cachedDesiredHint: String? = null
+
+    @Volatile
+    private var lastHintComputeTime = 0L
+
+    @Volatile
     private var appContext: Context? = null
 
     @Volatile
@@ -46,6 +52,8 @@ object InputStatsHook {
     /** 配置（模板/开关）变更后调用：清除缓存并立即刷新输入框提示 */
     fun refreshNow() {
         InputStatsConfig.invalidateCache()
+        cachedDesiredHint = null
+        lastHintComputeTime = 0L
         postUpdateHint()
     }
 
@@ -91,15 +99,54 @@ object InputStatsHook {
                 "setHint",
                 CharSequence::class.java,
                 object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val input = param.thisObject as? EditText ?: return
+                        if (applyingHint.get()) return
+                        if (!isChatInput(input)) return
+                        val desired = getOrComputeDesiredHint()
+                        if (desired.isNotEmpty()) {
+                            // 在 before 中同步拦截并覆写入参，彻底消灭原生提示与统计提示交替闪烁
+                            param.args[0] = desired
+                        }
+                    }
+
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val input = param.thisObject as? EditText ?: return
                         if (applyingHint.get()) return
                         if (!isChatInput(input)) return
-                        input.post { applyHintToInput(input) }
+                        val desired = getOrComputeDesiredHint()
+                        if (desired.isNotEmpty() && input.hint?.toString() != desired) {
+                            input.post { applyHintToInput(input) }
+                        }
                     }
                 }
             )
-            xlog("hooked TextView.setHint(CharSequence)")
+            // 兼容可能调用的 setHint(int resid)
+            runCatching {
+                XposedHelpers.findAndHookMethod(
+                    TextView::class.java,
+                    "setHint",
+                    Int::class.javaPrimitiveType,
+                    object : XC_MethodHook() {
+                        override fun beforeHookedMethod(param: MethodHookParam) {
+                            val input = param.thisObject as? EditText ?: return
+                            if (applyingHint.get()) return
+                            if (!isChatInput(input)) return
+                            val desired = getOrComputeDesiredHint()
+                            if (desired.isNotEmpty()) {
+                                param.result = null // 阻止资源解析
+                                if (!applyingHint.compareAndSet(false, true)) return
+                                try {
+                                    input.hint = desired
+                                } finally {
+                                    applyingHint.set(false)
+                                }
+                            }
+                        }
+                    }
+                )
+            }
+            xlog("hooked TextView.setHint methods")
         }.onFailure {
             xlog("TextView.setHint hook skipped: ${it.message}")
         }
@@ -146,6 +193,27 @@ object InputStatsHook {
         }
     }
 
+    private fun getOrComputeDesiredHint(): String {
+        val now = System.currentTimeMillis()
+        val cached = cachedDesiredHint
+        if (cached != null && now - lastHintComputeTime < 2_000L) {
+            return cached
+        }
+        val options = InputStatsConfig.load(now)
+        val desired = if (options.enabled) {
+            val prefs = statsPrefs()
+            if (prefs != null) {
+                val stats = loadSnapshot(prefs, todayKey())
+                InputStatsFormatter.format(options.template, stats)
+            } else ""
+        } else {
+            ""
+        }
+        cachedDesiredHint = desired
+        lastHintComputeTime = now
+        return desired
+    }
+
     private fun handleInsertedMessage(values: ContentValues) {
         runCatching {
             val options = InputStatsConfig.load()
@@ -159,6 +227,8 @@ object InputStatsHook {
             val current = loadSnapshot(prefs, dateKey)
             val next = InputStatsFormatter.addOutgoing(current, type, content)
             saveSnapshot(prefs, next)
+            cachedDesiredHint = null
+            lastHintComputeTime = 0L
             postUpdateHint()
         }.onFailure {
             Log.e(TAG, "handleInsertedMessage error", it)
@@ -211,14 +281,7 @@ object InputStatsHook {
             val editText = input as? EditText ?: return
             if (!isChatInput(editText)) return
             rememberInput(editText)
-            val options = InputStatsConfig.load()
-            val desired = if (options.enabled) {
-                val prefs = statsPrefs() ?: return
-                val stats = loadSnapshot(prefs, todayKey())
-                InputStatsFormatter.format(options.template, stats)
-            } else {
-                ""
-            }
+            val desired = getOrComputeDesiredHint()
             if (editText.hint?.toString() == desired) return
             if (!applyingHint.compareAndSet(false, true)) return
             try {

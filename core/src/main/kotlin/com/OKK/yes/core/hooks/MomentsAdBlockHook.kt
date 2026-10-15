@@ -2,98 +2,211 @@ package com.OKK.yes.core.hooks
 
 import android.content.Context
 import android.util.Log
+import com.OKK.yes.core.compat.DexKitSupport
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
+import java.lang.reflect.Method
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 去除朋友圈广告。
+ * 去除朋友圈广告（五层立体防御体系）。
  *
- * 逆向说明：
- * `RemoveMomentsAds.kt` → Hook `com.tencent.mm.plugin.sns.storage.ADInfo`
- * 的 `ADInfo(String)` 构造，before 将 result 置 null，阻止广告对象生成。
+ * 1. ADInfo(String) 构造拦截：置 null 跳过 XML 广告属性解析（WeKit / Hchat 同源核心实现）；
+ * 2. ADXml(String) 构造拦截：置 null 阻止富媒体卡片 XML 解析；
+ * 3. AdSnsInfo.convertToSnsInfo() 拦截：置 null 阻止广告数据库行转换为朋友圈信息节点；
+ * 4. SnsInfo.isAd() 方法门禁：置 false，保证任何视图渲染均不走广告展示分支；
+ * 5. SnsSqliteDB rawQuery SQL 拦截：改写含 AdSnsInfo 的查询（插入 1=0 屏蔽条件），从数据库源头抹除已缓存的广告记录。
  *
- * 当前微信反编译确认：
- * - `ADInfo` 类存在
- * - 构造：`ADInfo()` / `ADInfo(String)`
- *
- * 配置：`remove_moments_ads` 默认 false
+ * 配置项：`remove_moments_ads`
  */
 object MomentsAdBlockHook {
     private const val TAG = "OKK-MomentsAd"
     private const val KEY = "remove_moments_ads"
-    private const val AD_INFO = "com.tencent.mm.plugin.sns.storage.ADInfo"
+
+    private const val CLS_AD_INFO = "com.tencent.mm.plugin.sns.storage.ADInfo"
+    private const val CLS_AD_XML = "com.tencent.mm.plugin.sns.storage.ADXml"
+    private const val CLS_AD_SNS_INFO = "com.tencent.mm.plugin.sns.storage.AdSnsInfo"
+    private const val CLS_SNS_INFO = "com.tencent.mm.plugin.sns.storage.SnsInfo"
 
     private val installed = AtomicBoolean(false)
-    private val blocked = AtomicInteger(0)
+    private val blockedCount = AtomicInteger(0)
+    private val hookedSqlMethods = ConcurrentHashMap.newKeySet<String>()
 
     fun install(context: Context, classLoader: ClassLoader, modulePath: String? = null) {
         if (!installed.compareAndSet(false, true)) return
-        xlog("install enabled=${isEnabled()}")
+        xlog("install start, enabled=${isEnabled()}")
+
+        // 1. 挂钩 ADInfo(String) 与全参构造
+        hookAdInfo(classLoader)
+
+        // 2. 挂钩 ADXml(String) 富媒体卡片构造
+        hookAdXml(classLoader)
+
+        // 3. 挂钩 AdSnsInfo 转换与 SnsInfo.isAd() 门禁
+        hookSnsInfoAdCheck(classLoader)
+
+        // 4. 挂钩朋友圈 SnsSqliteDB rawQuery，从源头改写 SQL 过滤本地已缓存广告
+        hookSnsDatabase(context, classLoader, modulePath)
+
+        xlog("installed completely")
+    }
+
+    /** 1. Hook ADInfo 构造函数 */
+    private fun hookAdInfo(classLoader: ClassLoader) {
         runCatching {
-            val clazz = XposedHelpers.findClass(AD_INFO, classLoader)
-            var n = 0
-            // 构造后清空关键广告字段（构造器 before 置 result 在 Xposed 上不可靠）
+            val clazz = XposedHelpers.findClass(CLS_AD_INFO, classLoader)
+            var count = 0
             for (ctor in clazz.declaredConstructors) {
-                XposedBridge.hookMethod(ctor, object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        if (!isEnabled()) return
-                        val obj = param.thisObject ?: return
-                        neutralizeAdInfo(obj)
-                        val c = blocked.incrementAndGet()
-                        if (c <= 5 || c % 50 == 0) {
-                            xlog("neutralized ADInfo #$c")
+                val params = ctor.parameterTypes
+                if (params.size == 1 && params[0] == String::class.java) {
+                    XposedBridge.hookMethod(ctor, object : XC_MethodHook() {
+                        override fun beforeHookedMethod(param: MethodHookParam) {
+                            if (!isEnabled()) return
+                            // 构造前置 null 阻止 feed(xml) 解析广告数据
+                            param.result = null
+                            val c = blockedCount.incrementAndGet()
+                            if (c <= 5 || c % 50 == 0) {
+                                xlog("blocked ADInfo(String) ctor #$c")
+                            }
                         }
-                    }
-                })
-                n++
-            }
-            // 布尔 isAd* 方法强制 true，让时间线跳过广告节点
-            for (m in clazz.declaredMethods) {
-                if (m.returnType != Boolean::class.javaPrimitiveType &&
-                    m.returnType != Boolean::class.javaObjectType
-                ) {
-                    continue
+                    })
+                    count++
                 }
-                val name = m.name.lowercase()
-                if (!name.contains("ad") && !name.contains("advert")) continue
-                XposedBridge.hookMethod(m, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        if (!isEnabled()) return
-                        param.result = true
-                    }
-                })
-                n++
             }
-            xlog("hooked ADInfo paths count=$n")
+            xlog("hooked ADInfo ctors: $count")
         }.onFailure {
-            xlog("ADInfo hook fail: ${it.message}")
+            xlog("hook ADInfo fail: ${it.message}")
         }
     }
 
-    private fun neutralizeAdInfo(obj: Any) {
+    /** 2. Hook ADXml 富媒体构造函数 */
+    private fun hookAdXml(classLoader: ClassLoader) {
         runCatching {
-            for (f in obj.javaClass.declaredFields) {
-                if (java.lang.reflect.Modifier.isStatic(f.modifiers)) continue
-                f.isAccessible = true
-                when {
-                    f.type == String::class.java -> {
-                        val n = f.name.lowercase()
-                        if (n.contains("ad") || n.contains("uxinfo") || n.contains("aid")) {
-                            runCatching { f.set(obj, "") }
+            val clazz = XposedHelpers.findClass(CLS_AD_XML, classLoader)
+            var count = 0
+            for (ctor in clazz.declaredConstructors) {
+                val params = ctor.parameterTypes
+                if (params.size == 1 && params[0] == String::class.java) {
+                    XposedBridge.hookMethod(ctor, object : XC_MethodHook() {
+                        override fun beforeHookedMethod(param: MethodHookParam) {
+                            if (!isEnabled()) return
+                            param.result = null
+                            blockedCount.incrementAndGet()
                         }
-                    }
-                    f.type == Int::class.javaPrimitiveType ||
-                        f.type == Int::class.javaObjectType -> {
-                        val n = f.name.lowercase()
-                        if (n.contains("ad") || n.contains("type") && n.contains("action")) {
-                            runCatching { f.set(obj, 0) }
-                        }
-                    }
+                    })
+                    count++
                 }
             }
+            xlog("hooked ADXml ctors: $count")
+        }.onFailure {
+            xlog("hook ADXml fail: ${it.message}")
+        }
+    }
+
+    /** 3. Hook AdSnsInfo.convertToSnsInfo 与 SnsInfo.isAd */
+    private fun hookSnsInfoAdCheck(classLoader: ClassLoader) {
+        // AdSnsInfo.convertToSnsInfo()
+        runCatching {
+            val clazz = XposedHelpers.findClass(CLS_AD_SNS_INFO, classLoader)
+            val convertMethod = clazz.declaredMethods.firstOrNull {
+                it.name == "convertToSnsInfo" && it.parameterCount == 0
+            }
+            if (convertMethod != null) {
+                XposedBridge.hookMethod(convertMethod, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        if (!isEnabled()) return
+                        param.result = null
+                    }
+                })
+                xlog("hooked AdSnsInfo.convertToSnsInfo()")
+            }
+        }.onFailure {
+            xlog("hook AdSnsInfo convert fail: ${it.message}")
+        }
+
+        // SnsInfo.isAd()
+        runCatching {
+            val clazz = XposedHelpers.findClass(CLS_SNS_INFO, classLoader)
+            val isAdMethod = clazz.declaredMethods.firstOrNull {
+                it.name == "isAd" && it.parameterCount == 0 &&
+                    (it.returnType == Boolean::class.javaPrimitiveType || it.returnType == java.lang.Boolean.TYPE)
+            }
+            if (isAdMethod != null) {
+                XposedBridge.hookMethod(isAdMethod, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        if (!isEnabled()) return
+                        // 强制返回 false，切断朋友圈 UI 中一切广告渲染路径
+                        param.result = false
+                    }
+                })
+                xlog("hooked SnsInfo.isAd() -> false")
+            }
+        }.onFailure {
+            xlog("hook SnsInfo.isAd fail: ${it.message}")
+        }
+    }
+
+    /** 4. Hook 朋友圈 SnsSqliteDB rawQuery */
+    private fun hookSnsDatabase(context: Context, classLoader: ClassLoader, modulePath: String?) {
+        // 4.1 DexKit 查找 SnsSqliteDB 的 rawQuery 方法
+        runCatching {
+            val methods = DexKitSupport.findMethodsByStrings(
+                context, classLoader, modulePath,
+                "com.tencent.mm.plugin.sns.storage.SnsSqliteDB", "rawQuery"
+            )
+            for (method in methods) {
+                hookDatabaseMethod(method, "DexKit")
+            }
+        }.onFailure { xlog("DexKit SnsSqliteDB search fail: ${it.message}") }
+
+        // 4.2 静态扫描常见 Sns DB 类
+        val fallbackClasses = listOf(
+            "com.tencent.mm.plugin.sns.storage.n2",
+            "com.tencent.mm.plugin.sns.storage.m2",
+            "com.tencent.mm.plugin.sns.storage.o2",
+            "com.tencent.mm.plugin.sns.storage.p2",
+            "com.tencent.mm.plugin.sns.storage.q2",
+            "com.tencent.mm.plugin.sns.storage.SnsSqliteDB"
+        )
+        for (clsName in fallbackClasses) {
+            val clazz = runCatching { XposedHelpers.findClass(clsName, classLoader) }.getOrNull() ?: continue
+            for (method in clazz.declaredMethods) {
+                val params = method.parameterTypes
+                if (params.isNotEmpty() && params[0] == String::class.java &&
+                    (method.returnType.name.contains("Cursor") || method.returnType == Any::class.java)
+                ) {
+                    hookDatabaseMethod(method, "fallback")
+                }
+            }
+        }
+    }
+
+    private fun hookDatabaseMethod(method: Method, source: String) {
+        val strIdx = method.parameterTypes.indexOfFirst { it == String::class.java }
+        if (strIdx < 0) return
+        val key = "${method.declaringClass.name}#${method.name}_${method.parameterTypes.size}"
+        if (!hookedSqlMethods.add(key)) return
+
+        runCatching {
+            method.isAccessible = true
+            XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    if (!isEnabled()) return
+                    val sql = param.args.getOrNull(strIdx) as? String ?: return
+                    val rewritten = MomentsAdBlockLogic.rewriteSql(sql) ?: return
+                    param.args[strIdx] = rewritten
+                    val c = blockedCount.incrementAndGet()
+                    if (c <= 5 || c % 50 == 0) {
+                        xlog("rewrote AdSnsInfo SQL #$c via $source ($key)")
+                    }
+                }
+            })
+            xlog("hooked Sns DB query method: $key ($source)")
+        }.onFailure {
+            xlog("hook Sns DB method $key fail: ${it.message}")
         }
     }
 
@@ -101,7 +214,7 @@ object MomentsAdBlockHook {
         runCatching { PublicConfigStore.getBoolean(KEY, false) }.getOrDefault(false)
 
     private fun xlog(msg: String) {
-        Log.e(TAG, msg)
+        Log.i(TAG, msg)
         try {
             XposedBridge.log("[$TAG] $msg")
         } catch (_: Throwable) {

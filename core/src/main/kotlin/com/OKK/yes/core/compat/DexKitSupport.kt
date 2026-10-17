@@ -19,6 +19,8 @@ object DexKitSupport {
 
     private const val TAG = "OKK-DexKit"
     private val nativeLoaded = AtomicBoolean(false)
+    @Volatile private var sharedBridge: DexKitBridge? = null
+    private val sessionDepth = java.util.concurrent.atomic.AtomicInteger(0)
 
     fun ensureNative(context: Context, modulePath: String?): Boolean {
         if (nativeLoaded.get()) return true
@@ -32,6 +34,40 @@ object DexKitSupport {
         }
     }
 
+    /**
+     * 开启批处理 Session：在 Session 存续期间，所有 withBridge 调用复用同一个 DexKitBridge 实例，
+     * 避免 38 个功能安装时重复 20+ 次解析 18 个 DEX（可将 10+ 秒减少到 1 次解析约 0.8 秒）。
+     * Session 结束时统一 close() 释放 native 资源。
+     */
+    fun beginSession(context: Context, classLoader: ClassLoader, modulePath: String?): Boolean {
+        if (!ensureNative(context, modulePath)) return false
+        synchronized(this) {
+            if (sharedBridge == null) {
+                runCatching {
+                    sharedBridge = DexKitBridge.create(classLoader, true)
+                }.onFailure {
+                    xlog("beginSession create bridge fail: ${it.message}")
+                }
+            }
+            if (sharedBridge != null) {
+                sessionDepth.incrementAndGet()
+                return true
+            }
+            return false
+        }
+    }
+
+    fun endSession() {
+        synchronized(this) {
+            val d = sessionDepth.decrementAndGet()
+            if (d <= 0) {
+                sessionDepth.set(0)
+                runCatching { sharedBridge?.close() }
+                sharedBridge = null
+            }
+        }
+    }
+
     fun <T> withBridge(
         context: Context,
         classLoader: ClassLoader,
@@ -39,6 +75,14 @@ object DexKitSupport {
         block: (DexKitBridge) -> T
     ): T? {
         if (!ensureNative(context, modulePath)) return null
+        val active = sharedBridge
+        if (active != null) {
+            return runCatching {
+                block(active)
+            }.onFailure {
+                xlog("bridge(shared) fail: ${it.javaClass.simpleName}: ${it.message}")
+            }.getOrNull()
+        }
         return runCatching {
             DexKitBridge.create(classLoader, true).use(block)
         }.onFailure {

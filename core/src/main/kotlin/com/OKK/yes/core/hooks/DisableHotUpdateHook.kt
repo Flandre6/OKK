@@ -48,8 +48,10 @@ object DisableHotUpdateHook {
         hookTinkerFlags(classLoader)
 
         if (isEnabled()) {
-            wipeTinkerDir(context)
-            setTinkerComponentsEnabled(context, false)
+            Thread({
+                wipeTinkerDir(context)
+                setTinkerComponentsEnabled(context, false)
+            }, "OKK-WipeTinker").start()
         }
     }
 

@@ -32,6 +32,14 @@ class WeChatVersionTest {
     }
 
     @Test
+    fun play79_3182_is_play() {
+        val v = WeChatVersion("8.0.79", 3182L, WeChatVersion.Channel.PLAY)
+        assertTrue(v.inPrimaryRange)
+        assertEquals("主适配", v.supportLabel)
+        assertEquals("PLAY", v.channel.name)
+    }
+
+    @Test
     fun play77_is_primary_range() {
         val v = WeChatVersion("8.0.77", 3141L, WeChatVersion.Channel.PLAY)
         assertTrue(v.inPrimaryRange)

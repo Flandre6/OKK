@@ -440,6 +440,18 @@ object SettingsEntryHook {
 
     /** 在加号帮助类上结构化找到返回 BaseAdapter 子类且无参的工厂方法，不依赖混淆方法名/类名。 */
     private fun resolveAdapterClass(plusClass: Class<*>, classLoader: ClassLoader): Class<*>? {
+        // 1. 字段类型为 BaseAdapter 子类（例如 8.0.79 的 zg.f216978r: ug）
+        findField(plusClass) { f ->
+            android.widget.BaseAdapter::class.java.isAssignableFrom(f.type) &&
+                f.type != android.widget.BaseAdapter::class.java
+        }?.type?.let { return it }
+
+        // 2. 内部类/成员类中继承 BaseAdapter 的类
+        plusClass.declaredClasses.firstOrNull {
+            android.widget.BaseAdapter::class.java.isAssignableFrom(it)
+        }?.let { return it }
+
+        // 3. 无参工厂方法返回具体 BaseAdapter
         ReflectCompat.hierarchy(plusClass)
             .flatMap { it.declaredMethods.asSequence() }
             .firstOrNull { m ->
@@ -447,6 +459,7 @@ object SettingsEntryHook {
                     android.widget.BaseAdapter::class.java.isAssignableFrom(m.returnType) &&
                     m.returnType != android.widget.BaseAdapter::class.java
             }?.returnType?.let { return it }
+
         return ReflectCompat.findClass("com.tencent.mm.ui.mg", classLoader)
     }
 
@@ -457,32 +470,44 @@ object SettingsEntryHook {
         }
         xlog("plus helper class resolved=${plus.name}")
         var hooked = 0
-        // 菜单构建方法：无参 + 返回 boolean（原 8.0.72 下为 d()）。按签名匹配，不写死方法名。
+        // 菜单构建/展示方法：
+        // 1) 无参 + 返回 boolean/void（原 8.0.72 下为 d()）
+        // 2) 单参 int + 返回 boolean（如 8.0.77/79 的 kd.d(int) 显示弹窗方法）
         ReflectCompat.hierarchy(plus)
             .flatMap { it.declaredMethods.asSequence() }
             .filter { m ->
-                m.parameterTypes.isEmpty() &&
-                    (m.returnType == Boolean::class.javaPrimitiveType || m.returnType == Void.TYPE)
+                !java.lang.reflect.Modifier.isAbstract(m.modifiers) &&
+                    ((m.parameterTypes.isEmpty() &&
+                        (m.returnType == Boolean::class.javaPrimitiveType || m.returnType == Void.TYPE)) ||
+                     (m.parameterTypes.size == 1 &&
+                        m.parameterTypes[0] == Int::class.javaPrimitiveType &&
+                        m.returnType == Boolean::class.javaPrimitiveType))
             }
             .forEach { method ->
                 runCatching {
                     method.isAccessible = true
-                    XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                    val hook = object : XC_MethodHook() {
+                        override fun beforeHookedMethod(param: MethodHookParam) {
+                            if (!plus.isInstance(param.thisObject)) return
+                            injectPlusMenuItem(param.thisObject, classLoader)
+                        }
                         override fun afterHookedMethod(param: MethodHookParam) {
                             if (!plus.isInstance(param.thisObject)) return
                             injectPlusMenuItem(param.thisObject, classLoader)
                         }
-                    })
+                    }
+                    XposedBridge.hookMethod(method, hook)
                     hooked++
                     xlog("plus menu display hooked ${method.declaringClass.name}.${method.name}")
                 }.onFailure { xlog("plus display hook fail ${method.declaringClass.name}.${method.name}: ${it.message}") }
             }
 
-        // adapter 工厂方法：无参 + 返回 BaseAdapter 子类（原为 b()）。
+        // adapter 工厂方法：非抽象 + 无参 + 返回 BaseAdapter 子类（原为 b()）。
         ReflectCompat.hierarchy(plus)
             .flatMap { it.declaredMethods.asSequence() }
             .filter { m ->
-                m.parameterTypes.isEmpty() &&
+                !java.lang.reflect.Modifier.isAbstract(m.modifiers) &&
+                    m.parameterTypes.isEmpty() &&
                     android.widget.BaseAdapter::class.java.isAssignableFrom(m.returnType)
             }
             .forEach { method ->

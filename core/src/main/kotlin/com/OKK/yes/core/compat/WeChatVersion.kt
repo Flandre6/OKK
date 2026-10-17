@@ -17,6 +17,7 @@ import de.robv.android.xposed.XposedBridge
  * - cn76    8.0.76 / 3140
  * - play77  8.0.77 / 3141
  * - cn79    8.0.79 / 3200
+ * - play79  8.0.79 / 3182
  */
 data class WeChatVersion(
     val versionName: String,
@@ -135,72 +136,75 @@ data class WeChatVersion(
             // 1.5) 针对同 versionCode 冲突的特殊联合判定：
             // Google Play 8.0.77 的 versionCode 为 3141，与国服 8.0.76 分支 build (3141) 发生冲突。
             // 当检测到 versionName 为 8.0.77 且 code 为 3141L 时，优先判定为 Google Play
-            if (name == "8.0.77" && code == 3141L) {
+            if (name.startsWith("8.0.77") && code == 3141L) {
                 return Channel.PLAY
+            }
+            if (name.startsWith("8.0.79") && code in 3180L..3189L) {
+                return Channel.PLAY
+            }
+            if (name.startsWith("8.0.79") && code == 3200L) {
+                return Channel.CN
+            }
+            if (name.startsWith("8.0.76") && (code == 3140L || code == 3141L)) {
+                return Channel.CN
             }
 
             // 2) 精确映射表：已知国服 / Play 的 versionCode（尾数不规律，必须精确匹配）
             when (code) {
                 // 国服
-                3060L, 3100L, 3120L, 3140L, 3141L, 3200L -> return Channel.CN
+                3060L, 3100L, 3120L, 3140L, 3200L -> return Channel.CN
                 // Google Play
-                3022L, 3083L, 3084L -> return Channel.PLAY
+                3022L, 3083L, 3084L, 3180L, 3181L, 3182L, 3183L, 3184L, 3185L -> return Channel.PLAY
             }
 
-            // 3) 兜底：运行时扫描微信 APK 的 classes.dex 是否含 Google Play 计费特征
+            // 3) 兜底：同步快速扫描微信 APK 的 classes.dex 是否含 Google Play 计费特征
             //    （com.android.billingclient / com.android.vending.billing 仅在 Play 版存在）
-            //    在后台线程扫描，首次调用先返回 UNKNOWN，避免阻塞模块加载。
-            return detectPlayByDexAsync(context)
+            //    只读前部 classes.dex，耗时 < 100ms，避免异步回调首轮误判为 UNKNOWN
+            return detectPlayByDexSync(context)
         }
 
         /**
          * 扫描微信 APK 的 dex 是否含 Play 计费特征。
          * Play 版内置 InApp Billing（com.android.billingclient / com.android.vending.billing），
          * 国服没有；com.google.android.play.core 两者都有，不能作为判据。
-         * 只读前 4 个 dex（billingclient 均在前部，国服 8.0.76 共 17 个 dex 全读太重），命中即 Play。
-         * 在后台线程执行，避免阻塞模块加载；结果缓存到 playDexCache。
+         * 只读前 4 个 dex（billingclient 均在前部），命中即 Play。
+         * 结果缓存到 playDexCache。
          */
         @Volatile
         private var playDexCache: Channel? = null
 
-        private fun detectPlayByDexAsync(context: Context): Channel {
+        private fun detectPlayByDexSync(context: Context): Channel {
             playDexCache?.let { return it }
-            // 后台线程扫描，首次返回 UNKNOWN
-            Thread {
-                try {
-                    var result: Channel = Channel.UNKNOWN
-                    val apkPath = runCatching {
-                        context.packageManager.getApplicationInfo("com.tencent.mm", 0).sourceDir
-                    }.getOrNull()
-                    if (!apkPath.isNullOrBlank()) {
-                        result = runCatching {
-                            val f = java.io.File(apkPath)
-                            if (!f.exists()) return@runCatching Channel.UNKNOWN
-                            java.util.zip.ZipFile(f).use { zf ->
-                                var found = false
-                                val headers = listOf("classes.dex", "classes2.dex", "classes3.dex", "classes4.dex")
-                                for (n in headers) {
-                                    val entry = zf.getEntry(n) ?: continue
-                                    val size = entry.size
-                                    if (size > 40L * 1024 * 1024) continue // 跳过超大 dex
-                                    val buf = ByteArray(size.toInt())
-                                    zf.getInputStream(entry).read(buf)
-                                    val s = String(buf, Charsets.ISO_8859_1)
-                                    if (s.contains("com/android/billingclient") ||
-                                        s.contains("com/android/vending/billing")
-                                    ) { found = true; break }
-                                }
-                                if (found) Channel.PLAY else Channel.CN
-                            }
-                        }.getOrDefault(Channel.UNKNOWN)
+            val result = runCatching {
+                val apkPath = runCatching {
+                    context.packageManager.getApplicationInfo("com.tencent.mm", 0).sourceDir
+                }.getOrNull()
+                if (apkPath.isNullOrBlank()) return@runCatching Channel.UNKNOWN
+                val f = java.io.File(apkPath)
+                if (!f.exists()) return@runCatching Channel.UNKNOWN
+                java.util.zip.ZipFile(f).use { zf ->
+                    var found = false
+                    val headers = listOf("classes.dex", "classes2.dex", "classes3.dex", "classes4.dex")
+                    for (n in headers) {
+                        val entry = zf.getEntry(n) ?: continue
+                        val size = entry.size
+                        if (size > 40L * 1024 * 1024) continue // 跳过超大 dex
+                        val buf = ByteArray(size.toInt())
+                        zf.getInputStream(entry).read(buf)
+                        val s = String(buf, Charsets.ISO_8859_1)
+                        if (s.contains("com/android/billingclient") ||
+                            s.contains("com/android/vending/billing")
+                        ) {
+                            found = true
+                            break
+                        }
                     }
-                    playDexCache = result
-                    xlog("dex probe result=$result")
-                } catch (t: Throwable) {
-                    xlog("dex probe fail: ${t.message}")
+                    if (found) Channel.PLAY else Channel.CN
                 }
-            }.start()
-            return Channel.UNKNOWN
+            }.getOrDefault(Channel.UNKNOWN)
+            playDexCache = result
+            xlog("dex probe result=$result")
+            return result
         }
 
         private fun xlog(msg: String) {

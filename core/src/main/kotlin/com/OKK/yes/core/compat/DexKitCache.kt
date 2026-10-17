@@ -20,14 +20,17 @@ object DexKitCache {
             val ver = WeChatVersion.resolve(context)
             val dir = File("/storage/emulated/0/Android/media/com.tencent.mm/OKK")
             if (!dir.exists()) dir.mkdirs()
-            cacheFile = File(dir, "dexkit_cache_${ver.versionCode}_${ver.versionName}.json")
-            if (cacheFile?.exists() == true) {
+            val channelCache = File(dir, "dexkit_cache_${ver.channel.name}_${ver.versionCode}_${ver.versionName}.json")
+            val legacyCache = File(dir, "dexkit_cache_${ver.versionCode}_${ver.versionName}.json")
+            cacheFile = channelCache
+            val targetFile = if (channelCache.exists()) channelCache else if (legacyCache.exists()) legacyCache else channelCache
+            if (targetFile.exists()) {
                 runCatching {
-                    val json = JSONObject(cacheFile!!.readText())
+                    val json = JSONObject(targetFile.readText())
                     json.keys().forEach { k ->
                         cacheMap[k] = json.getString(k)
                     }
-                    xlog("loaded ${cacheMap.size} entries for v${ver.versionCode} (${ver.versionName})")
+                    xlog("loaded ${cacheMap.size} entries for [${ver.channel.name}] v${ver.versionCode} (${ver.versionName})")
                 }.onFailure { xlog("load err: $it") }
             }
             isLoaded = true

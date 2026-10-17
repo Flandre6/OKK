@@ -34,8 +34,8 @@ android {
         applicationId = "com.OKK.yes"
         minSdk = 26
         targetSdk = 37
-        versionCode = 22
-        versionName = "1.3.0"
+        versionCode = 23
+        versionName = "1.3.1"
         // 真机主流 arm64；去掉 x86 模拟器 so 减小体积
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")

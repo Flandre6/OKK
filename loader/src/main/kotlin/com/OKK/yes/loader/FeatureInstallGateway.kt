@@ -64,7 +64,7 @@ object FeatureInstallGateway {
 
     fun isFeaturesInstalled(): Boolean = featuresInstalled.get()
 
-    /** 按当前 [CompatReportStore] 报告安装全部业务功能（只一次） */
+    /** 按当前 [CompatReportStore] 报告分级加载业务功能 */
     fun installFeaturesOnce(reason: String) {
         if (!featuresInstalled.compareAndSet(false, true)) {
             xlog("features already installed, skip ($reason)")
@@ -73,7 +73,7 @@ object FeatureInstallGateway {
         val ctx = appContext ?: return
         val cl = classLoader ?: return
         val mp = modulePath
-        xlog("install features via $reason")
+        xlog("install features via $reason [two-stage loader enabled]")
 
         // 全局绑定桥接入口，无视是否开启 HomeAvatar
         HomeDrawerBridge.openSettings = { act ->
@@ -101,136 +101,150 @@ object FeatureInstallGateway {
             )
         }
 
-        installIfOk("HomeAvatar") {
-            HomeAvatarHook.install(ctx, cl, mp)
-        }
-
-        installIfOk("HideHomeDivider") {
-            HideHomeDividerHook.install(ctx, cl, mp)
-        }
-        installIfOk("FoldBannerPin") {
-            FoldBannerPinHook.install(ctx, cl, mp)
-        }
-        installIfOk("BottomTabIcon") {
-            BottomTabIconHook.install(ctx, cl, mp)
-        }
-        installLenient("BottomTabFloating", "探针误判时仍尝试安装，失败由隔离器兜底") {
-            BottomTabFloatingHook.install(ctx, cl, mp)
-        }
-        installIfOk("RoundAvatar") {
-            RoundAvatarHook.install(ctx, cl, mp)
-        }
-        installIfOk("ThemeWallpaper") {
-            ThemeWallpaperHook.install(ctx, cl, mp)
-        }
+        // ══════════════════════════════════════════════════════════════════════
+        // 【Stage 1: 核心同步快速底座】主线程毫秒级完成，杜绝任何冷启动卡死与ANR
+        // 仅装：底层网络协议截断（防撤回/防输入上报）与热更新防护，确保首批消息绝不漏拦
+        // ══════════════════════════════════════════════════════════════════════
         installIfOk("AntiRevoke") {
             AntiRevokeHook.install(ctx, cl, mp)
         }
         installIfOk("BlockTypingReport") {
             BlockTypingReportHook.install(ctx, cl, mp)
         }
-        installLenient("ChatEnhance", "探针误判时仍尝试安装，失败由隔离器兜底") {
-            ChatEnhanceHook.install(ctx, cl, mp)
-        }
-        installIfOk("QuoteDeleteClear") {
-            QuoteDeleteClearHook.install(ctx, cl, mp)
-        }
-        installLenient("SwipeDeleteKeep", "探针误判时仍尝试安装，失败由隔离器兜底") {
-            SwipeDeleteKeepHook.install(ctx, cl, mp)
-        }
-        installLenient("ConversationListStyle", "会话列表卡片美化与置顶染色") {
-            ConversationListStyleHook.install(ctx, cl, mp)
-        }
-        installLenient("CloseFriend", "探针误判时仍尝试安装，失败由隔离器兜底") {
-            CloseFriendHook.install(ctx, cl, mp)
-        }
-        installIfOk("EditMessage") {
-            EditMessageHook.install(ctx, cl, mp)
-        }
-        installIfOk("InputStats") {
-            InputStatsHook.install(ctx, cl)
-        }
-        installIfOk("AntiMomentsDelete") {
-            AntiMomentsDeleteHook.install(ctx, cl, mp)
-        }
-        installIfOk("AntiMomentsComment") {
-            AntiMomentsCommentHook.install(ctx, cl, mp)
-        }
-        installIfOk("MomentsAdBlock") {
-            MomentsAdBlockHook.install(ctx, cl, mp)
-        }
-        installIfOk("ProfileId") {
-            ProfileIdHook.install(ctx, cl, mp)
-        }
-        installIfOk("RealNameTail") {
-            RealNameTailHook.install(ctx, cl, mp)
-        }
-        installIfOk("MemberTitle") {
-            MemberTitleHook.install(ctx, cl, mp)
-        }
         installIfOk("DisableHotUpdate") {
             DisableHotUpdateHook.install(ctx, cl, mp)
         }
-        installIfOk("VirtualLocation") {
-            VirtualLocationHook.install(ctx, cl, mp)
-        }
-        installIfOk("AutoLoginWin") {
-            AutoLoginWinHook.install(ctx, cl, mp)
-        }
-        installIfOk("SystemCamera") {
-            SystemCameraHook.install(ctx, cl)
-        }
-        installIfOk("RemoveLimitsDuringCalls") {
-            RemoveLimitsDuringCallsHook.install(ctx, cl, mp)
-        }
-        installIfOk("ChatToolbar") {
-            ChatToolbarHook.install(ctx, cl, mp)
-        }
-        installIfOk("AutoDpi") {
-            // DPI scaling is handled dynamically in Compose UI themes and settings
-        }
-        installIfOk("MapPickBridge") {
-            WeChatMapPickBridge.install(cl)
-        }
-        installIfOk("DownloadRedirect") {
-            DownloadRedirectHook.install(ctx, cl, mp)
-        }
-        installLenient("FinderVideoDownload", "视频号分享菜单探针特征可能随微信版本偏移，仍尝试安装，失败由隔离器兜底") {
-            FinderVideoDownloadHook.install(ctx, cl, mp)
-        }
-        installIfOk("FloatingQuickEntry") {
-            FloatingQuickEntryHook.install(ctx, cl, mp)
-        }
-        installLenient("ConversationGrouping", "探针误判时仍尝试安装，失败由隔离器兜底") {
-            ConversationGroupingHook.install(ctx, cl, mp)
-        }
-        
-        installLenient("JavaPlugin", "无需探针，通过动态脚本拓展核心功能") {
-            com.OKK.yes.core.hooks.plugins.JavaPluginHook.install(ctx, cl, mp)
-        }
-        
         FeatureHookRegistry.persist()
-        // 注册主动干跑自检（只读反射状态，无副作用）
-        runCatching { com.OKK.yes.core.startup.FeatureVerifiers.registerAll() }
-            .onFailure { xlog("register verifiers fail: ${it.message}") }
-        // 启动时落盘一次深度审计（小文件写，放在后台线程，便于 adb 回收）
-        Thread {
+        xlog("stage 1 core hooks ready in main thread")
+
+        // ══════════════════════════════════════════════════════════════════════
+        // 【Stage 2: 场景/UI/重型Hook 异步后台加载】
+        // 微信 Splash 界面即刻放行，秒进聊天列表；剩余 30+ 项 Hook 在后台线程池安全挂载
+        // ══════════════════════════════════════════════════════════════════════
+        Thread({
             runCatching {
+                installIfOk("HomeAvatar") {
+                    HomeAvatarHook.install(ctx, cl, mp)
+                }
+                installIfOk("HideHomeDivider") {
+                    HideHomeDividerHook.install(ctx, cl, mp)
+                }
+                installIfOk("FoldBannerPin") {
+                    FoldBannerPinHook.install(ctx, cl, mp)
+                }
+                installIfOk("BottomTabIcon") {
+                    BottomTabIconHook.install(ctx, cl, mp)
+                }
+                installLenient("BottomTabFloating", "探针误判时仍尝试安装，失败由隔离器兜底") {
+                    BottomTabFloatingHook.install(ctx, cl, mp)
+                }
+                installIfOk("RoundAvatar") {
+                    RoundAvatarHook.install(ctx, cl, mp)
+                }
+                installIfOk("ThemeWallpaper") {
+                    ThemeWallpaperHook.install(ctx, cl, mp)
+                }
+                installLenient("ChatEnhance", "探针误判时仍尝试安装，失败由隔离器兜底") {
+                    ChatEnhanceHook.install(ctx, cl, mp)
+                }
+                installIfOk("QuoteDeleteClear") {
+                    QuoteDeleteClearHook.install(ctx, cl, mp)
+                }
+                installLenient("SwipeDeleteKeep", "探针误判时仍尝试安装，失败由隔离器兜底") {
+                    SwipeDeleteKeepHook.install(ctx, cl, mp)
+                }
+                installLenient("ConversationListStyle", "会话列表卡片美化与置顶染色") {
+                    ConversationListStyleHook.install(ctx, cl, mp)
+                }
+                installLenient("CloseFriend", "探针误判时仍尝试安装，失败由隔离器兜底") {
+                    CloseFriendHook.install(ctx, cl, mp)
+                }
+                installIfOk("EditMessage") {
+                    EditMessageHook.install(ctx, cl, mp)
+                }
+                installIfOk("InputStats") {
+                    InputStatsHook.install(ctx, cl)
+                }
+                installIfOk("AntiMomentsDelete") {
+                    AntiMomentsDeleteHook.install(ctx, cl, mp)
+                }
+                installIfOk("AntiMomentsComment") {
+                    AntiMomentsCommentHook.install(ctx, cl, mp)
+                }
+                installIfOk("MomentsAdBlock") {
+                    MomentsAdBlockHook.install(ctx, cl, mp)
+                }
+                installIfOk("ProfileId") {
+                    ProfileIdHook.install(ctx, cl, mp)
+                }
+                installIfOk("RealNameTail") {
+                    RealNameTailHook.install(ctx, cl, mp)
+                }
+                installIfOk("MemberTitle") {
+                    MemberTitleHook.install(ctx, cl, mp)
+                }
+                installIfOk("VirtualLocation") {
+                    VirtualLocationHook.install(ctx, cl, mp)
+                }
+                installIfOk("AutoLoginWin") {
+                    AutoLoginWinHook.install(ctx, cl, mp)
+                }
+                installIfOk("SystemCamera") {
+                    SystemCameraHook.install(ctx, cl)
+                }
+                installIfOk("RemoveLimitsDuringCalls") {
+                    RemoveLimitsDuringCallsHook.install(ctx, cl, mp)
+                }
+                installIfOk("ChatToolbar") {
+                    ChatToolbarHook.install(ctx, cl, mp)
+                }
+                installIfOk("AutoDpi") {
+                    // DPI scaling is handled dynamically in Compose UI themes and settings
+                }
+                installIfOk("MapPickBridge") {
+                    WeChatMapPickBridge.install(cl)
+                }
+                installIfOk("DownloadRedirect") {
+                    DownloadRedirectHook.install(ctx, cl, mp)
+                }
+                installLenient("FinderVideoDownload", "视频号分享菜单探针特征可能随微信版本偏移，仍尝试安装，失败由隔离器兜底") {
+                    FinderVideoDownloadHook.install(ctx, cl, mp)
+                }
+                installIfOk("FloatingQuickEntry") {
+                    FloatingQuickEntryHook.install(ctx, cl, mp)
+                }
+                installLenient("ConversationGrouping", "探针误判时仍尝试安装，失败由隔离器兜底") {
+                    ConversationGroupingHook.install(ctx, cl, mp)
+                }
+                installLenient("JavaPlugin", "无需探针，通过动态脚本拓展核心功能") {
+                    com.OKK.yes.core.hooks.plugins.JavaPluginHook.install(ctx, cl, mp)
+                }
+
+                FeatureHookRegistry.persist()
+                xlog("stage 2 background hooks ready ${FeatureHookRegistry.summaryLine()}")
+
+                // 注册主动干跑自检（只读反射状态，无副作用）
+                runCatching { com.OKK.yes.core.startup.FeatureVerifiers.registerAll() }
+                    .onFailure { xlog("register verifiers fail: ${it.message}") }
+
+                // 启动落盘深度审计报告
                 val rows = com.OKK.yes.core.startup.RuntimeHealthAudit.audit()
                 com.OKK.yes.core.startup.RuntimeHealthAudit.persist(rows)
                 xlog("runtime audit ${com.OKK.yes.core.startup.RuntimeHealthAudit.summaryLine(rows)}")
-            }.onFailure { xlog("runtime audit fail: ${it.message}") }
 
-            // 启动后 20s 复检一次：部分锚点（如 ConversationStorage 实例）是惰性初始化的，
-            // 首次审计偏早，二次审计才能反映真实可达性。
-            runCatching {
-                Thread.sleep(20_000L)
-                val rows2 = com.OKK.yes.core.startup.RuntimeHealthAudit.audit()
-                com.OKK.yes.core.startup.RuntimeHealthAudit.persist(rows2)
-                xlog("runtime audit(2nd) ${com.OKK.yes.core.startup.RuntimeHealthAudit.summaryLine(rows2)}")
-            }.onFailure { xlog("runtime audit 2nd fail: ${it.message}") }
-        }.start()
-        xlog("features done ${FeatureHookRegistry.summaryLine()}")
+                // 20s 二次审计
+                runCatching {
+                    Thread.sleep(20_000L)
+                    val rows2 = com.OKK.yes.core.startup.RuntimeHealthAudit.audit()
+                    com.OKK.yes.core.startup.RuntimeHealthAudit.persist(rows2)
+                    xlog("runtime audit(2nd) ${com.OKK.yes.core.startup.RuntimeHealthAudit.summaryLine(rows2)}")
+                }.onFailure { xlog("runtime audit 2nd fail: ${it.message}") }
+            }.onFailure {
+                xlog("stage 2 background hooks fail: ${it.message}")
+            }
+        }, "OKK-Stage2-Worker").start()
+
+        xlog("installFeaturesOnce returned immediately")
     }
 
     private fun installIfOk(name: String, block: () -> Unit) {

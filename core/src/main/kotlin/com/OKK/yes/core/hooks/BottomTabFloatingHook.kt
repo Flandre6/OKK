@@ -74,7 +74,7 @@ object BottomTabFloatingHook {
 
         hookMainTabUi(classLoader)
         hookFrostedContentView(classLoader)
-        hookNativeBottomTabVisibility()
+        hookNativeBottomTabVisibility(classLoader)
         hookScrollHide(classLoader)
         hookUnreadMethods(classLoader)
         registerLifecycleGuard(context)
@@ -378,22 +378,24 @@ object BottomTabFloatingHook {
         }
     }
 
-    private fun hookNativeBottomTabVisibility() {
+    private fun hookNativeBottomTabVisibility(classLoader: ClassLoader) {
+        val tabClass = runCatching {
+            XposedHelpers.findClass(BOTTOM_TAB, classLoader)
+        }.getOrNull() ?: return
+
+        // 仅靶向 LauncherUIBottomTabView 控件本身，不 hook 全局 View 根类，彻底消除每秒数万次的 JNI 开销
         val visibilityHook = object : XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
                 if (!hideBarEnabled()) return
-                val v = param.thisObject as? View ?: return
-                if (isNativeBottomTabView(v)) param.args[0] = View.GONE
+                param.args[0] = View.GONE
             }
         }
         runCatching {
-            XposedHelpers.findAndHookMethod(View::class.java, "setVisibility", Int::class.javaPrimitiveType, visibilityHook)
+            XposedHelpers.findAndHookMethod(tabClass, "setVisibility", Int::class.javaPrimitiveType, visibilityHook)
         }
         val backgroundHook = object : XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
                 if (!hideBarEnabled()) return
-                val v = param.thisObject as? View ?: return
-                if (!isNativeBottomTabView(v)) return
                 if (param.args[0] is Int) {
                     param.args[0] = android.graphics.Color.TRANSPARENT
                 } else {
@@ -402,10 +404,10 @@ object BottomTabFloatingHook {
             }
         }
         runCatching {
-            XposedHelpers.findAndHookMethod(View::class.java, "setBackgroundColor", Int::class.javaPrimitiveType, backgroundHook)
+            XposedHelpers.findAndHookMethod(tabClass, "setBackgroundColor", Int::class.javaPrimitiveType, backgroundHook)
         }
         runCatching {
-            XposedHelpers.findAndHookMethod(View::class.java, "setBackgroundDrawable", android.graphics.drawable.Drawable::class.java, backgroundHook)
+            XposedHelpers.findAndHookMethod(tabClass, "setBackgroundDrawable", android.graphics.drawable.Drawable::class.java, backgroundHook)
         }
     }
 

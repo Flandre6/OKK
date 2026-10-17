@@ -80,36 +80,13 @@ object ConversationListStyleHook {
                         applyStyleToListView(list)
                     }
                 })
-                val touchHook = object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val event = param.args.getOrNull(0) as? MotionEvent ?: return
-                        if (event.action == MotionEvent.ACTION_DOWN) {
-                            val list = param.thisObject as? ListView
-                            if (list != null && list.getTag(R.id.abc_tag_conv_list_styled) != true) {
-                                applyStyleToListView(list)
-                            }
-                        }
-                    }
-                }
-                runCatching { XposedHelpers.findAndHookMethod(clazz, "dispatchTouchEvent", MotionEvent::class.java, touchHook) }
-                runCatching { XposedHelpers.findAndHookMethod(clazz, "onTouchEvent", MotionEvent::class.java, touchHook) }
                 xlog("hooked $listName onAttached & setAdapter")
             }
         }
 
-        runCatching {
-            XposedHelpers.findAndHookMethod(ListView::class.java, "layoutChildren", object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val list = param.thisObject as? ListView ?: return
-                    if (isConversationListView(list)) {
-                        val ctx = list.context ?: return
-                        val enabled = isEnabled()
-                        val density = ctx.resources.displayMetrics.density
-                        decorateExistingChildren(list, enabled, ctx, density)
-                    }
-                }
-            })
-        }
+        // 注：彻底拔除全局 ListView.layoutChildren 与 dispatchTouchEvent/onTouchEvent Hook，
+        // 样式修饰已由 onAttachedToWindow、OnHierarchyChangeListener 以及 adapter.getView 精准承接，
+        // 彻底消除全局列表滚动与触摸事件的 JNI 反射拦截。
 
         // 挂钩 ConversationWithCacheAdapter 与 MvvmConversationAdapter
         runCatching {

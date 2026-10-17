@@ -151,29 +151,7 @@ object SwipeDeleteKeepHook {
                     })
                 }
             }
-            // 构造函数可能早在 Hook 安装前就已执行（storageRef 会永久为空），
-            // 因此额外挂载所有实例方法，在首次调用时捕获 ConversationStorage 实例。
-            runCatching {
-                var n = 0
-                for (m in clazz.declaredMethods) {
-                    if (java.lang.reflect.Modifier.isStatic(m.modifiers)) continue
-                    if (m.parameterCount > 4) continue
-                    runCatching {
-                        m.isAccessible = true
-                        XposedBridge.hookMethod(m, object : XC_MethodHook() {
-                            override fun beforeHookedMethod(param: MethodHookParam) {
-                                if (storageRef == null) {
-                                    storageRef = param.thisObject
-                                    xlog("captured ConversationStorage via ${m.name}")
-                                }
-                            }
-                        })
-                        n++
-                    }
-                }
-                xlog("instance-method capture hooks installed: $n")
-            }
-            // 立即尝试一次主动解析（构造函数可能已过）
+            // 立即尝试一次主动静态解析（若构造函数已过，直接通过 MMKernel 拿到单例，无需挂载 47 个方法 Hook）
             runCatching { resolveStorageRefNow(cl) }
         }
     }

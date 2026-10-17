@@ -294,14 +294,12 @@ object CloseFriendStore {
     // ── SQL 谓词 ──
 
     /**
-     * 生成主页会话隐藏的 SQL 排除谓词：username NOT IN ('a','b')。
+     * 生成主页会话隐藏的 SQL 排除谓词：rconversation.username NOT IN ('a','b')。
+     * 支持传入表别名，彻底避免在多表联查中发生 "ambiguous column name: username"。
      */
-    fun buildConversationExcludePredicate(): String? {
+    fun buildConversationExcludePredicate(alias: String = "rconversation"): String? {
         if (!hideConversation()) return null
-        val ids = ids()
-        if (ids.isEmpty()) return null
-        val inList = ids.joinToString(",") { "'${it.replace("'", "''")}'" }
-        return "username NOT IN ($inList)"
+        return CloseFriendSqlLogic.buildExcludeCondition(ids(), alias)
     }
 
     private fun parseMembers(raw: String): List<Member> = runCatching {

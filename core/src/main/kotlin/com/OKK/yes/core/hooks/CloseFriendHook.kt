@@ -132,7 +132,7 @@ object CloseFriendHook {
         for (className in dbClasses) {
             val dbClass = runCatching { XposedHelpers.findClass(className, cl) }.getOrNull() ?: continue
             for (method in dbClass.declaredMethods) {
-                if (method.name.startsWith("rawQuery") || method.name.startsWith("query") || method.name == "execSQL") {
+                if (method.name.startsWith("rawQuery")) {
                     val strIdx = method.parameterTypes.indexOfFirst { it == String::class.java }
                     if (strIdx < 0) continue
                     val key = "$className#${method.name}_${method.parameterTypes.size}"
@@ -273,14 +273,30 @@ object CloseFriendHook {
     /** 主页会话列表 SQL 过滤 */
     private fun rewriteConversation(sql: String, param: XC_MethodHook.MethodHookParam, strIdx: Int, lower: String) {
         if (!CloseFriendStore.hideConversation()) return
-        val predicate = CloseFriendStore.buildConversationExcludePredicate() ?: return
-        if (lower.contains("wekit_folder_") || lower.contains("conversationboxservice")) return
-        val trimmed = lower.trimStart()
-        if (trimmed.startsWith("select count(") || trimmed.startsWith("select distinct count(")) return
+        if (!CloseFriendSqlLogic.looksLikeConversationListQuery(sql, lower)) return
+
+        // 检查调用栈：如果是模块自身内部查询，不改写
+        if (isModuleInternalQuery()) return
+
+        val alias = CloseFriendSqlLogic.extractTableAlias(sql, "rconversation")
+        val predicate = CloseFriendStore.buildConversationExcludePredicate(alias) ?: return
         if (sql.contains(predicate)) return
-        val rewritten = injectCondition(sql, "($predicate)") ?: return
+        val rewritten = CloseFriendSqlLogic.injectCondition(sql, "($predicate)") ?: return
         param.args[strIdx] = rewritten
-        xlogThrottled("conversation SQL rewritten")
+        xlogThrottled("conversation SQL rewritten (alias=$alias)")
+    }
+
+    private fun isModuleInternalQuery(): Boolean {
+        return runCatching {
+            val stack = Thread.currentThread().stackTrace
+            stack.any { elem ->
+                val cls = elem.className
+                cls.contains("com.OKK.yes.core.hooks.ContactDisplayNames") ||
+                cls.contains("com.OKK.yes.core.hooks.CloseFriendManagerUi") ||
+                cls.contains("com.OKK.yes.core.hooks.CloseFriendStore") ||
+                cls.contains("com.OKK.yes.core.hooks.ConversationGroupManager")
+            }
+        }.getOrDefault(false)
     }
 
     /** 通讯录 rcontact SQL 源头拦截 */
@@ -297,27 +313,20 @@ object CloseFriendHook {
         }
 
         // 检查调用栈：如果是模块自身的管理页面或分类查询（如 ContactDisplayNames、CloseFriendManagerUi），不要过滤，确保管理成员列表可见密友并方便移除
-        val stack = Thread.currentThread().stackTrace
-        val isModuleInternalQuery = stack.any { elem ->
-            val cls = elem.className
-            cls.contains("com.OKK.yes.core.hooks.ContactDisplayNames") ||
-            cls.contains("com.OKK.yes.core.hooks.CloseFriendManagerUi") ||
-            cls.contains("com.OKK.yes.core.hooks.CloseFriendStore") ||
-            cls.contains("com.OKK.yes.core.hooks.ConversationGroupManager")
-        }
-        if (isModuleInternalQuery) {
+        if (isModuleInternalQuery()) {
             return
         }
 
         if (sql.contains("rcontact.username NOT IN") || sql.contains("username NOT IN")) return
 
         val idListStr = ids.joinToString(",") { "'" + it.replace("'", "''") + "'" }
-        val usernameCol = if (lower.contains("rcontact.")) "rcontact.username" else "username"
+        val alias = CloseFriendSqlLogic.extractTableAlias(sql, "rcontact")
+        val usernameCol = if (alias.isNotBlank()) "$alias.username" else "username"
         val cond = "$usernameCol NOT IN ($idListStr)"
 
-        val rewritten = injectCondition(sql, "($cond)") ?: return
+        val rewritten = CloseFriendSqlLogic.injectCondition(sql, "($cond)") ?: return
         param.args[strIdx] = rewritten
-        xlogThrottled("contact rcontact SQL rewritten")
+        xlogThrottled("contact rcontact SQL rewritten (alias=$alias)")
     }
 
     /** 是否为 FTS 搜索查询 */
@@ -337,22 +346,8 @@ object CloseFriendHook {
     }
 
     /** 在 ORDER BY / GROUP BY / LIMIT 之前把条件 AND 进 WHERE */
-    private fun injectCondition(sql: String, condition: String): String? {
-        val lower = sql.lowercase()
-        val insertion = listOf(" order by ", " group by ", " limit ")
-            .map { lower.indexOf(it) }
-            .filter { it >= 0 }
-            .minOrNull()
-        return if (insertion == null) {
-            if (lower.contains(" where ")) "$sql AND $condition"
-            else "$sql WHERE $condition"
-        } else {
-            val head = sql.substring(0, insertion)
-            val tail = sql.substring(insertion)
-            if (head.lowercase().contains("where")) "$head AND $condition$tail"
-            else "$head WHERE $condition$tail"
-        }
-    }
+    fun injectCondition(sql: String, condition: String): String? =
+        CloseFriendSqlLogic.injectCondition(sql, condition)
 
     // ── 2. ListView 拦截（兼容传统通讯录与老版朋友圈） ──
 

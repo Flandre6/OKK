@@ -46,6 +46,7 @@ object ConversationGroupingHook {
     @Volatile private var tabsViewRef: ConversationTabsView? = null
 
     private val hookedSqlMethods = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val SINGLE_USER_WHERE_REGEX = Regex("""(?i)\b(?:rconversation\.)?username\s*=\s*[?'"]""")
 
     @Volatile private var storageClazz: Class<*>? = null
     @Volatile var storageRef: Any? = null
@@ -126,7 +127,7 @@ object ConversationGroupingHook {
             val dbClass = runCatching { XposedHelpers.findClass(cn, cl) }.getOrNull() ?: continue
             for (m in dbClass.declaredMethods) {
                 val name = m.name
-                if (!name.startsWith("rawQuery") && !name.startsWith("query") && name != "execSQL") continue
+                if (!name.startsWith("rawQuery")) continue
                 val strIdx = m.parameterTypes.indexOf(String::class.java)
                 if (strIdx < 0) continue
 
@@ -156,6 +157,12 @@ object ConversationGroupingHook {
         val lower = sql.lowercase()
         if (!lower.contains("rconversation")) return null
         if (lower.contains("wekit_folder_") || lower.contains("conversationboxservice")) return null
+
+        // 排除单会话精准定位查询（单会话详情绝对不能过滤，否则导致微信 isPlacedTop 置顶判断全部失效）
+        // 注意：使用正则区分参数/字面值赋值与联表条件，不能误伤 "where rconversation.username = rcontact.username" 这类 JOIN 条件
+        if (SINGLE_USER_WHERE_REGEX.containsMatchIn(sql)) {
+            return null
+        }
 
         // 性能优化：跳过纯 count(*) 等聚合/低价值查询，避免未读角标轮询被反复重写造成卡顿
         val trimmed = sql.trimStart().lowercase()
